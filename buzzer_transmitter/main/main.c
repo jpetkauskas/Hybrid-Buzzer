@@ -1,9 +1,3 @@
-/*
- * SPDX-FileCopyrightText: 2010-2022 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: CC0-1.0
- */
-
 #include "driver/gpio.h"
 #include "esp_now.h"
 #include "esp_timer.h"
@@ -48,12 +42,18 @@ static void IRAM_ATTR button_isr(void *arg) {
   switch (pin) {
     case SW_1:
       pin_id = 1;
+      break;
     case SW_2:
       pin_id = 2;
+      break;
     case SW_3:
       pin_id = 3;
+      break;
     case SW_4:
       pin_id = 4;
+      break;
+    default:
+      pin_id = 0;
   }
 
   data.player_id = pin_id;
@@ -119,7 +119,7 @@ void app_main(void) {
   while (1) {
     if (xQueueReceive(q, &data, portMAX_DELAY)) {
       esp_now_send(receiver_mac, (uint8_t *)&data, sizeof(data));
-      //printf("Pin %" PRIu32 " fired\n", data.player_id);
+      printf("Pin %d fired\n", data.player_id);
       xTaskCreate(flash_led, "flash", 2048, NULL, 10, NULL);
     }
   }
