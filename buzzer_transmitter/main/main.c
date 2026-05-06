@@ -36,6 +36,7 @@ static int64_t last_fire[GPIO_NUM_MAX];
 
 static void IRAM_ATTR button_isr(void *arg) {
   uint32_t pin = (uint32_t)arg;
+  uint8_t pin_id;
 
   if (gpio_get_level(pin) != 0)
     return;
@@ -44,7 +45,18 @@ static void IRAM_ATTR button_isr(void *arg) {
     return;
   last_fire[pin] = now;
 
-  data.player_id = pin;
+  switch (pin) {
+    case SW_1:
+      pin_id = 1;
+    case SW_2:
+      pin_id = 2;
+    case SW_3:
+      pin_id = 3;
+    case SW_4:
+      pin_id = 4;
+  }
+
+  data.player_id = pin_id;
   data.transmitter_id = team;
   xQueueSendFromISR(q, &data, NULL);
 }
@@ -76,10 +88,10 @@ void app_main(void) {
   gpio_config(&io_conf);
   gpio_config(&led_conf);
 
-  gpio_isr_handler_add(SW_1, button_isr, (void *)1);
-  gpio_isr_handler_add(SW_2, button_isr, (void *)2);
-  gpio_isr_handler_add(SW_3, button_isr, (void *)3);
-  gpio_isr_handler_add(SW_4, button_isr, (void *)4);
+  gpio_isr_handler_add(SW_1, button_isr, (void *)SW_1);
+  gpio_isr_handler_add(SW_2, button_isr, (void *)SW_2);
+  gpio_isr_handler_add(SW_3, button_isr, (void *)SW_3);
+  gpio_isr_handler_add(SW_4, button_isr, (void *)SW_4);
 
   nvs_flash_init();
 
