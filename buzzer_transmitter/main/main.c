@@ -10,6 +10,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "esp_log.h"
+#include "esp_mac.h"
+
 
 #define SW_1 3
 #define SW_2 46
@@ -27,6 +30,18 @@ static uint8_t receiver_mac[6] = {0x20, 0x6E, 0xF1, 0xE1, 0xA0, 0xFC};
 
 static QueueHandle_t q;
 static int64_t last_fire[GPIO_NUM_MAX];
+
+typedef enum {
+    MSG_BEACON = 0,
+    MSG_HELLO,
+    MSG_DATA,
+    MSG_ACK,
+} msg_type_t;
+
+typedef struct {
+    msg_type_t type;
+    uint8_t    data[32];  // extend as needed
+} payload_t;
 
 static void IRAM_ATTR button_isr(void *arg) {
   uint32_t pin = (uint32_t)arg;
@@ -80,6 +95,26 @@ void flash_led(void *arg) {
   vTaskDelay(pdMS_TO_TICKS(200)); // on for 500ms
   gpio_set_level(LED, 0);
   vTaskDelete(NULL);
+}
+
+static void on_recv(const esp_now_recv_info_t *info,
+                    const uint8_t *data, int len)
+{
+    payload_t *pkt = (payload_t *)data;
+
+    if (pkt->type == MSG_BEACON) {
+        // Got beacon from C — add it as peer if not already registered
+        if (!esp_now_is_peer_exist(info->src_addr)) {
+            esp_now_peer_info_t peer = { .ifidx = WIFI_IF_STA, .encrypt = false };
+            memcpy(peer.peer_addr, info->src_addr, 6);
+            esp_now_add_peer(&peer);
+            ESP_LOGI("ESPNOW_TX", "Registered receiver: " MACSTR, MAC2STR(info->src_addr));
+        }
+    }
+
+    if (pkt->type == MSG_ACK) {
+        // Normal ACK handling
+    }
 }
 
 void app_main(void) {

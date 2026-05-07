@@ -1,19 +1,13 @@
 #include "driver/gpio.h"
-#include "esp_chip_info.h"
-#include "esp_flash.h"
 #include "esp_now.h"
-#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
-#include "freertos/FreeRTOS.h"
 #include "freertos/projdefs.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "packet.h"
 #include "portmacro.h"
-#include "sdkconfig.h"
-#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,9 +28,14 @@
 static uint32_t led_array[] = {LED_1, LED_2, LED_3, LED_4,
                                LED_5, LED_6, LED_7, LED_8};
 
+static uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
 packet incoming;
 
-bool latch_state = false;
+volatile bool latch_state = false;
+
+static uint8_t registered_nodes = 0;
+volatile bool connection_state;
 
 static QueueHandle_t q;
 
@@ -50,7 +49,8 @@ typedef struct buzz_profile {
 buzz_profile ba = {.length = 500, .buzzes = 1};
 buzz_profile bb = {.length = 200, .buzzes = 2};
 
-buzz_profile bn[] = {{.length = 500, .buzzes = 1}, {.length = 200, .buzzes = 2}};
+buzz_profile bn[] = {{.length = 500, .buzzes = 1},
+                     {.length = 200, .buzzes = 2}};
 
 static void IRAM_ATTR button_isr(void *arg) {
   if (gpio_get_level(CLEAR) != 0)
@@ -98,6 +98,30 @@ void buzz(void *arg) {
   vTaskDelete(NULL);
 }
 
+static void beacon_task(void *arg) {
+  esp_now_peer_info_t peer = {
+      .ifidx = WIFI_IF_STA,
+      .encrypt = false,
+      .channel = 0,
+  };
+  memcpy(peer.peer_addr, broadcast_mac, 6);
+
+  if (!esp_now_is_peer_exist(broadcast_mac))
+    esp_now_add_peer(&peer);
+
+  while (!connection_state) {
+
+    packet pkt = {0};
+    esp_err_t err = esp_now_send(broadcast_mac, (uint8_t *)&pkt, sizeof(pkt));
+    printf("Beacon sent: %s\n", esp_err_to_name(err));
+
+    vTaskDelay(
+        pdMS_TO_TICKS(500)); // beacon every 500ms until all nodes respond
+  }
+
+  vTaskDelete(NULL); // stop beaconing once network is up
+}
+
 void app_main(void) {
   gpio_install_isr_service(0);
 
@@ -123,6 +147,8 @@ void app_main(void) {
 
   xTaskCreate(buzz, "buzz", 2048, &bn[0], 10, NULL);
 
+  xTaskCreate(beacon_task, "beacon", 2048, NULL, 5, NULL);
+
   while (1) {
     if (xQueueReceive(q, &incoming, portMAX_DELAY) && !latch_state) {
       latch_state = true;
@@ -135,9 +161,8 @@ void app_main(void) {
 
       xTaskCreate(buzz, "buzz", 2048, &bn[team], 10, NULL);
 
-      printf("Team %d, player %d, MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
-             team, player,
-             incoming.transmitter_mac[0], incoming.transmitter_mac[1],
+      printf("Team %d, player %d, MAC %02x:%02x:%02x:%02x:%02x:%02x\n", team,
+             player, incoming.transmitter_mac[0], incoming.transmitter_mac[1],
              incoming.transmitter_mac[2], incoming.transmitter_mac[3],
              incoming.transmitter_mac[4], incoming.transmitter_mac[5]);
     }
