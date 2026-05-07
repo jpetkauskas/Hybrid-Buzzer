@@ -19,7 +19,7 @@
 
 #define DEBOUNCE_US 50000
 
-static uint8_t team = 0;
+static uint8_t team = 1;
 
 packet data;
 

@@ -31,8 +31,8 @@
 
 #define DEBOUNCE_US 50000
 
-static uint32_t led_array[] = {LED_1, LED_2, LED_3, LED_4, LED_5,
-                               LED_6, LED_7, LED_8};
+static uint32_t led_array[] = {LED_1, LED_2, LED_3, LED_4,
+                               LED_5, LED_6, LED_7, LED_8};
 
 packet incoming;
 
@@ -48,6 +48,9 @@ typedef struct buzz_profile {
 } buzz_profile;
 
 buzz_profile ba = {.length = 500, .buzzes = 1};
+buzz_profile bb = {.length = 200, .buzzes = 2};
+
+buzz_profile bn[] = {{.length = 500, .buzzes = 1}, {.length = 200, .buzzes = 2}};
 
 static void IRAM_ATTR button_isr(void *arg) {
   if (gpio_get_level(CLEAR) != 0)
@@ -57,8 +60,7 @@ static void IRAM_ATTR button_isr(void *arg) {
     return;
   last_fire = now;
 
-  for(int i = 0; i < 8; i++)
-  {
+  for (int i = 0; i < 8; i++) {
     gpio_set_level(led_array[i], 0);
   }
 
@@ -86,9 +88,13 @@ gpio_config_t output_conf = {
 void buzz(void *arg) {
   buzz_profile *b = (buzz_profile *)arg;
 
-  gpio_set_level(BUZZ, 1);
-  vTaskDelay(pdMS_TO_TICKS(b->length));
-  gpio_set_level(BUZZ, 0);
+  for (int i = 0; i < b->buzzes; i++) {
+    gpio_set_level(BUZZ, 1);
+    vTaskDelay(pdMS_TO_TICKS(b->length));
+    gpio_set_level(BUZZ, 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
   vTaskDelete(NULL);
 }
 
@@ -115,7 +121,7 @@ void app_main(void) {
 
   q = xQueueCreate(10, sizeof(packet));
 
-  xTaskCreate(buzz, "buzz", 2048, &ba, 10, NULL);
+  xTaskCreate(buzz, "buzz", 2048, &bn[0], 10, NULL);
 
   while (1) {
     if (xQueueReceive(q, &incoming, portMAX_DELAY) && !latch_state) {
@@ -125,9 +131,9 @@ void app_main(void) {
       int8_t player = incoming.player_id;
 
       uint32_t player_led_index = (team * 4) + player;
-      gpio_set_level(led_array[player_led_index-1], 1);
+      gpio_set_level(led_array[player_led_index - 1], 1);
 
-      xTaskCreate(buzz, "buzz", 2048, &ba, 10, NULL);
+      xTaskCreate(buzz, "buzz", 2048, &bn[team], 10, NULL);
 
       printf("Team %d, player %d\n", team, player);
     }
