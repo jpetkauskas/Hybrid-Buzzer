@@ -4,4 +4,5 @@
 typedef struct packet {
     uint8_t transmitter_id;
     uint8_t player_id;
+    uint8_t transmitter_mac[6];
 } packet;
