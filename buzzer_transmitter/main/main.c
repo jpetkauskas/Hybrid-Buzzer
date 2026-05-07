@@ -77,7 +77,7 @@ gpio_config_t io_conf = {
 
 void flash_led(void *arg) {
   gpio_set_level(LED, 1);
-  vTaskDelay(pdMS_TO_TICKS(500)); // on for 500ms
+  vTaskDelay(pdMS_TO_TICKS(200)); // on for 500ms
   gpio_set_level(LED, 0);
   vTaskDelete(NULL);
 }
@@ -103,6 +103,8 @@ void app_main(void) {
   esp_wifi_start();
 
   esp_now_init();
+
+  esp_wifi_get_mac(WIFI_IF_STA, data.transmitter_mac);
 
   esp_now_peer_info_t peer = {
       .channel = 0, // 0 = use current channel

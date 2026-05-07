@@ -135,7 +135,11 @@ void app_main(void) {
 
       xTaskCreate(buzz, "buzz", 2048, &bn[team], 10, NULL);
 
-      printf("Team %d, player %d\n", team, player);
+      printf("Team %d, player %d, MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+             team, player,
+             incoming.transmitter_mac[0], incoming.transmitter_mac[1],
+             incoming.transmitter_mac[2], incoming.transmitter_mac[3],
+             incoming.transmitter_mac[4], incoming.transmitter_mac[5]);
     }
   }
 }
