@@ -5,3 +5,4 @@
 - Dynamic ID assignment
 - user settings
 - free rtos for fancy buzzing
+- Two-way buzzing (ie, arbitration winner receives back-confirmation from receiver) 
