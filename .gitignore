@@ -6,3 +6,4 @@ sdkconfig.old
 .cache/
 *.pyc
 __pycache__/
+*.clangd
