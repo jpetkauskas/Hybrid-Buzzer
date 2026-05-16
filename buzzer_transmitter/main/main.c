@@ -18,7 +18,6 @@ void flash_led(void *arg) {
   vTaskDelete(NULL);
 }
 
-
 void app_main(void) {
   q = xQueueCreate(10, sizeof(uint32_t));
 
