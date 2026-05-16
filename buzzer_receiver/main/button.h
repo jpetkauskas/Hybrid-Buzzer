@@ -23,5 +23,6 @@
 #include <string.h>
 
 extern int64_t last_fire;
+extern QueueHandle_t buzz_queue;
 
 void IRAM_ATTR button_isr(void *arg);
