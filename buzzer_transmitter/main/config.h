@@ -20,8 +20,6 @@
 #define SW_4 10
 #define LED 8
 
-#define DEBOUNCE_US 50000
-
 extern QueueHandle_t q;
 
 extern packet data;
@@ -30,10 +28,6 @@ extern uint8_t team;
 
 extern uint8_t receiver_mac[6];
 
-extern gpio_config_t led_conf;
-
-extern gpio_config_t io_conf;
-
-void init_transmitter_gpio(void);
+void init_transmitter_gpio(QueueHandle_t queue);
 
 void init_transmitter_wireless(void);

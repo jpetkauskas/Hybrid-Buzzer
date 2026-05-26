@@ -1,37 +1,30 @@
 #include "button.h"
-#include "config.h"
+#include "driver/gpio.h"
+#include "esp_timer.h"
+#include "packet.h"
 
 int64_t last_fire[GPIO_NUM_MAX];
 
 void IRAM_ATTR button_isr(void *arg) {
-  uint32_t pin = (uint32_t)arg;
-  uint8_t pin_id;
+  button_ctx_t *ctx = (button_ctx_t *)arg;
 
-  if (gpio_get_level(pin) != 0)
+  uint8_t pin_id = ctx->pin_id;
+  uint8_t pin = ctx->pin;
+
+
+  if (gpio_get_level(ctx->pin) != 0)
+  {
     return;
+  }
   int64_t now = esp_timer_get_time();
+
   if (now - last_fire[pin] < DEBOUNCE_US)
     return;
   last_fire[pin] = now;
 
-  switch (pin) {
-    case SW_1:
-      pin_id = 1;
-      break;
-    case SW_2:
-      pin_id = 2;
-      break;
-    case SW_3:
-      pin_id = 3;
-      break;
-    case SW_4:
-      pin_id = 4;
-      break;
-    default:
-      pin_id = 0;
-  }
+  packet to_send;
 
-  data.player_id = pin_id;
-  data.transmitter_id = team;
-  xQueueSendFromISR(q, &data, NULL);
+  to_send.player_id = pin_id;
+  to_send.transmitter_id = ctx->transmitter_id;
+  xQueueSendFromISR(ctx->q, &to_send, NULL);
 }
