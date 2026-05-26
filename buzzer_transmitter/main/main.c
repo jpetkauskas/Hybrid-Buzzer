@@ -13,15 +13,20 @@
 #include "wireless.h"
 
 void app_main(void) {
+  //FreeRTOS queue
   q = xQueueCreate(10, sizeof(packet));
 
+  //initialization steps
   init_transmitter_gpio(q);
-  
+
   init_transmitter_wireless();
 
   led_init();
+
+  // flash LED once on boot
   led_trigger();
 
+  //
   while (1) {
     if (xQueueReceive(q, &data, portMAX_DELAY)) {
       esp_now_send(receiver_mac, (uint8_t *)&data, sizeof(data));
