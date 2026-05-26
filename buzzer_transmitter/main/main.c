@@ -4,19 +4,19 @@
 #include "esp_wifi.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "led.h"
 #include "packet.h"
 #include <stdint.h>
 #include <stdio.h>
-#include "led.h"
 
 #include "config.h"
-
-
+#include "wireless.h"
 
 void app_main(void) {
   q = xQueueCreate(10, sizeof(packet));
 
   init_transmitter_gpio(q);
+  
   init_transmitter_wireless();
 
   led_init();
