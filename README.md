@@ -1,5 +1,7 @@
 **Hybrid Quiz Bowl Buzzers**
 
+![picture](Pictures/IMG_3927.JPEG)
+
 *Roadmap:*
 - Reachieve previous milestone (fixed MAC, no-pair, interrupt/reset/timer buzz)
 - Dynamic ID assignment
