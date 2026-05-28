@@ -27,4 +27,3 @@ void IRAM_ATTR button_isr(void *arg) {
   to_send.player_id = pin_id;
   to_send.transmitter_id = ctx->transmitter_id;
   xQueueSendFromISR(ctx->q, &to_send, NULL);
-}
