@@ -1,13 +1,27 @@
 #include "wireless.h"
-#include "esp_netif.h"
-#include "esp_now.h"
-#include "esp_wifi.h"
-#include "nvs_flash.h"
-#include <string.h>
 
-uint8_t receiver_mac[6] = {0x20, 0x6E, 0xF1, 0xE1, 0xA0, 0xFC};
+/*
+actual receiver MAC: {0x20, 0x6E, 0xF1, 0xE1, 0xA0, 0xFC}
+*/
 
-void init_transmitter_wireless(void) {
+uint8_t receiver_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+esp_now_peer_info_t peer = {
+    .channel = 0,
+    .encrypt = false,
+};
+
+void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  // handshake before blindly registering****
+  uint8_t *sender_mac = info->src_addr;
+  memcpy(receiver_mac, sender_mac, 6);
+  xSemaphoreGiveFromISR(received_sem, NULL); // unblocks the waiting task
+}
+
+// abstract ESPNOW hardware initialization
+
+static void wireless_hardware_init(void) {
+
   nvs_flash_init();
 
   esp_netif_init();
@@ -18,12 +32,35 @@ void init_transmitter_wireless(void) {
   esp_wifi_start();
 
   esp_now_init();
+}
 
-  esp_now_peer_info_t peer = {
-      .channel = 0,
-      .encrypt = false,
-  };
+void init_transmitter_wireless(void) {
+
+  wireless_hardware_init();
+
+  received_sem = xSemaphoreCreateBinary();
+
+  esp_now_register_recv_cb(on_recv);
+
+  while ((memcmp(receiver_mac, DEFAULT_MAC_VALUE, 6) == 0)) {
+    // led_trigger();
+  }
+
+  /*
+  listen for receiver beacon
+  assign receiver MAC
+
+  perhaps while(MAC==default value){}
+
+  while((memcmp(receiver_mac, DEFAULT_MAC_VALUE, 6) == 0))
+  {
+  led_trigger();
+  }
+  */
+
+  // Defining receiver MAC
 
   memcpy(peer.peer_addr, receiver_mac, 6);
+
   esp_now_add_peer(&peer);
 }

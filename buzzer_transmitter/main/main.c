@@ -26,6 +26,13 @@ void app_main(void) {
   // flash LED once on boot
   led_trigger();
 
+  //pair
+  /*
+  while(!system_pair())
+  {
+  }
+  */
+
   //
   while (1) {
     if (xQueueReceive(q, &data, portMAX_DELAY)) {
