@@ -31,10 +31,12 @@ void app_main(void) {
   buzz_queue = xQueueCreate(4, sizeof(buzz_profile *));
   xTaskCreate(buzz, "buzz", 2048, NULL, 10, NULL);
 
+  xQueueSend(buzz_queue, &(buzz_profile *){&bn[0]}, 0);
+
   receiver_init_gpio();
+  
   receiver_init_wireless();
 
-  xQueueSend(buzz_queue, &(buzz_profile *){&bn[0]}, 0);
 
   while (1) {
     if (xQueueReceive(q, &incoming, portMAX_DELAY) && !latch_state) {

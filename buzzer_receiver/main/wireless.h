@@ -16,11 +16,27 @@
 #include "portmacro.h"
 #include "sdkconfig.h"
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "config.h"
 #include "button.h"
 
+void pairing_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data, int len);
+
 void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
+
+void receiver_init_wireless(void);
+
+void receiver_hardware_init(void);
+
+static SemaphoreHandle_t pairing_complete;
+
+static bool transmitter_a_paired = false;
+
+static bool transmitter_b_paired = false;
+
+static bool *transmitter_flags[2] = {&transmitter_a_paired, &transmitter_b_paired};
+
+extern uint8_t transmitter_mac_addresss[2][6];
