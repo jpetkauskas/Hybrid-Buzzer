@@ -14,9 +14,10 @@ esp_now_peer_info_t peer = {
 
 void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   // handshake before blindly registering****
-  uint8_t *sender_mac = info->src_addr;
-  memcpy(receiver_mac, sender_mac, 6);
-  xSemaphoreGiveFromISR(received_sem, NULL); // unblocks the waiting task
+  led_trigger();
+  // uint8_t *sender_mac = info->src_addr;
+  // memcpy(receiver_mac, sender_mac, 6);
+  xSemaphoreGive(received_sem);
 }
 
 // abstract ESPNOW hardware initialization

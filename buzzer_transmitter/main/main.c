@@ -13,20 +13,20 @@
 #include "wireless.h"
 
 void app_main(void) {
-  //FreeRTOS queue
+  // FreeRTOS queue
   q = xQueueCreate(10, sizeof(packet));
 
-  //initialization steps
+  // initialization steps
   init_transmitter_gpio(q);
 
-  init_transmitter_wireless();
-
   led_init();
+
+  init_transmitter_wireless();
 
   // flash LED once on boot
   led_trigger();
 
-  //pair
+  // pair
   /*
   while(!system_pair())
   {
