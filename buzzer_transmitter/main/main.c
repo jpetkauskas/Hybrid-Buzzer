@@ -16,24 +16,15 @@ void app_main(void) {
   // FreeRTOS queue
   q = xQueueCreate(10, sizeof(packet));
 
-  // initialization steps
+  // initializes
   init_transmitter_gpio(q);
 
+  //initializes LED freeRTOS task
   led_init();
 
+  //initializes ESPNOW and returns when paired to receiver
   init_transmitter_wireless();
 
-  // flash LED once on boot
-  led_trigger();
-
-  // pair
-  /*
-  while(!system_pair())
-  {
-  }
-  */
-
-  //
   while (1) {
     if (xQueueReceive(q, &data, portMAX_DELAY)) {
       esp_now_send(receiver_mac, (uint8_t *)&data, sizeof(data));
