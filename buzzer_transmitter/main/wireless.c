@@ -1,10 +1,11 @@
 #include "wireless.h"
+#include "led.h"
 
 /*
 actual receiver MAC: {0x20, 0x6E, 0xF1, 0xE1, 0xA0, 0xFC}
 */
 
-uint8_t receiver_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+uint8_t receiver_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; //save from previous default?
 
 esp_now_peer_info_t peer = {
     .channel = 0,
@@ -42,9 +43,9 @@ void init_transmitter_wireless(void) {
 
   esp_now_register_recv_cb(on_recv);
 
-  while ((memcmp(receiver_mac, DEFAULT_MAC_VALUE, 6) == 0)) {
-    // led_trigger();
-  }
+  xSemaphoreTake(received_sem, portMAX_DELAY);
+
+  led_trigger();
 
   /*
   listen for receiver beacon

@@ -15,7 +15,7 @@ extern uint8_t receiver_mac[6];
 
 extern esp_now_peer_info_t peer;
 
-SemaphoreHandle_t received_sem;
+static SemaphoreHandle_t received_sem;
 
 void init_transmitter_wireless(void);
 
