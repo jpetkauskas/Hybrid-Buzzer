@@ -4,6 +4,7 @@
 #include "esp_now.h"
 #include <stdint.h>
 #include <string.h>
+#include "buzz.h"
 
 uint8_t transmitter_mac_addresses[2][6];
 
@@ -25,12 +26,14 @@ void pairing_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data,
   if ((caller_index != 0) &&
       (memcmp(incoming_mac, transmitter_mac_addresses[caller_index], 6) != 0)) {
     memcpy(transmitter_mac_addresses[caller_index], incoming_mac, 6);
-    gpio_set_level(LED_1, 1);
-    caller_index++;
-  } else if (caller_index == 0) {
-    memcpy(transmitter_mac_addresses[0], incoming_mac, 6);
     gpio_set_level(LED_5, 1);
     caller_index++;
+    transmitter_b_paired = true;
+  } else if (caller_index == 0) {
+    memcpy(transmitter_mac_addresses[0], incoming_mac, 6);
+    gpio_set_level(LED_1, 1);
+    caller_index++;
+    transmitter_a_paired = true;
   }
 
   if (transmitter_a_paired && transmitter_b_paired) {
@@ -67,6 +70,7 @@ void receiver_init_wireless(void) {
   esp_now_send(DEFAULT_MAC_VALUE, (uint8_t *)&handshake, sizeof(handshake));
 
   xSemaphoreTake(pairing_complete, portMAX_DELAY); // blocks here until receiver pairing beacon is received
+  buzz(&ba);
 
   esp_now_register_recv_cb(on_recv);
 }
