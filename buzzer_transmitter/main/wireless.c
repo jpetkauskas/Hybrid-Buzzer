@@ -1,6 +1,7 @@
 #include "wireless.h"
 #include "esp_now.h"
 #include "led.h"
+#include <stdint.h>
 #include <string.h>
 
 /*
@@ -16,12 +17,24 @@ esp_now_peer_info_t peer = {
 };
 
 void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  // add handshake before blindly registering****
-  uint8_t *sender_mac = info->src_addr;
-  memcpy(receiver_mac, sender_mac, 6);
-  led_trigger();
-  esp_now_unregister_recv_cb();
-  xSemaphoreGive(received_sem);
+  
+  packet *handshake;
+  memcpy(&handshake, &data, sizeof(data));
+
+printf("handshake id: %d, %d, %02x:%02x:%02x:%02x:%02x:%02x\n",
+       handshake->player_id, handshake->transmitter_id,
+       handshake->transmitter_mac[0], handshake->transmitter_mac[1],
+       handshake->transmitter_mac[2], handshake->transmitter_mac[3],
+       handshake->transmitter_mac[4], handshake->transmitter_mac[5]);
+
+  if(handshake->player_id == 3 && handshake->transmitter_id == 3 && (memcmp(handshake->transmitter_mac, DEFAULT_MAC_VALUE, 6) == 0))
+  {
+    uint8_t *sender_mac = info->src_addr;
+    memcpy(receiver_mac, sender_mac, 6);
+    led_trigger();
+    esp_now_unregister_recv_cb();
+    xSemaphoreGive(received_sem);
+  }
 }
 
 //  ESPNOW hardware initialization helper
@@ -46,7 +59,6 @@ void init_transmitter_wireless(void) {
       portMAX_DELAY); // blocks here until receiver pairing beacon is received
 
   // Defining receiver MAC
-  
   
   memcpy(peer.peer_addr, receiver_mac, 6);
   esp_now_add_peer(&peer);

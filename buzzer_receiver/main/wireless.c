@@ -18,34 +18,25 @@ void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   xQueueSendFromISR(q, data, NULL);
 }
 
-void pairing_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data,
-                           int len) {
+void pairing_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   static uint8_t caller_index = 0;
 
   uint8_t incoming_mac[6];
   memcpy(incoming_mac, info->src_addr, 6);
-  if ((caller_index != 0) &&
-      (memcmp(incoming_mac, transmitter_mac_addresses[caller_index-1], 6) != 0)) {
+  if ((caller_index != 0) && (memcmp(incoming_mac, transmitter_mac_addresses[caller_index - 1], 6) !=0)) {
     memcpy(transmitter_mac_addresses[caller_index], incoming_mac, 6);
     gpio_set_level(LED_5, 1);
     caller_index++;
     transmitter_b_paired = true;
-    printf("Transmitter B paired\n");
   } else if (caller_index == 0) {
     memcpy(transmitter_mac_addresses[0], incoming_mac, 6);
     gpio_set_level(LED_1, 1);
     caller_index++;
     transmitter_a_paired = true;
-    printf("Transmitter A paired\n");
   }
 
   if (transmitter_a_paired && transmitter_b_paired) {
-
-    printf("Paired transmitters: A %02X:%02X:%02X:%02X:%02X:%02X, B %02X:%02X:%02X:%02X:%02X:%02X\n",
-           transmitter_mac_addresses[0][0], transmitter_mac_addresses[0][1], transmitter_mac_addresses[0][2], transmitter_mac_addresses[0][3], transmitter_mac_addresses[0][4], transmitter_mac_addresses[0][5],
-           transmitter_mac_addresses[1][0], transmitter_mac_addresses[1][1], transmitter_mac_addresses[1][2], transmitter_mac_addresses[1][3], transmitter_mac_addresses[1][4], transmitter_mac_addresses[1][5]);
-    
-           xSemaphoreGive(pairing_complete);
+    xSemaphoreGive(pairing_complete);
   }
 }
 
@@ -63,7 +54,7 @@ void receiver_hardware_init(void) {
 void receiver_init_wireless(void) {
 
   receiver_hardware_init();
-  
+
   /*
   register pairing callback
   broadcast pairing beacon every 1500 ms until both transmitters respond
