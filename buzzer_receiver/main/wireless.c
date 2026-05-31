@@ -4,6 +4,7 @@
 #include "driver/gpio.h"
 #include "esp_now.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 uint8_t transmitter_mac_addresses[2][6];
@@ -24,7 +25,7 @@ void pairing_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data,
   uint8_t incoming_mac[6];
   memcpy(incoming_mac, info->src_addr, 6);
   if ((caller_index != 0) &&
-      (memcmp(incoming_mac, transmitter_mac_addresses[caller_index], 6) != 0)) {
+      (memcmp(incoming_mac, transmitter_mac_addresses[caller_index-1], 6) != 0)) {
     memcpy(transmitter_mac_addresses[caller_index], incoming_mac, 6);
     gpio_set_level(LED_5, 1);
     caller_index++;
@@ -39,7 +40,12 @@ void pairing_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data,
   }
 
   if (transmitter_a_paired && transmitter_b_paired) {
-    xSemaphoreGive(pairing_complete);
+
+    printf("Paired transmitters: A %02X:%02X:%02X:%02X:%02X:%02X, B %02X:%02X:%02X:%02X:%02X:%02X\n",
+           transmitter_mac_addresses[0][0], transmitter_mac_addresses[0][1], transmitter_mac_addresses[0][2], transmitter_mac_addresses[0][3], transmitter_mac_addresses[0][4], transmitter_mac_addresses[0][5],
+           transmitter_mac_addresses[1][0], transmitter_mac_addresses[1][1], transmitter_mac_addresses[1][2], transmitter_mac_addresses[1][3], transmitter_mac_addresses[1][4], transmitter_mac_addresses[1][5]);
+    
+           xSemaphoreGive(pairing_complete);
   }
 }
 
@@ -57,6 +63,7 @@ void receiver_hardware_init(void) {
 void receiver_init_wireless(void) {
 
   receiver_hardware_init();
+  
   /*
   register pairing callback
   broadcast pairing beacon every 1500 ms until both transmitters respond
@@ -75,8 +82,8 @@ void receiver_init_wireless(void) {
       pairing_complete,
       portMAX_DELAY); // blocks here until receiver pairing beacon is received
 
-  gpio_set_level(LED_1, 0);
-  gpio_set_level(LED_5, 0);
+  // gpio_set_level(LED_1, 0);
+  // gpio_set_level(LED_5, 0);
 
   esp_now_unregister_recv_cb();
   esp_now_register_recv_cb(on_recv);
