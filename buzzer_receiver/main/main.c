@@ -37,7 +37,6 @@ void app_main(void) {
   
   receiver_init_wireless();
 
-
   while (1) {
     if (xQueueReceive(q, &incoming, portMAX_DELAY) && !latch_state) {
       latch_state = true;
