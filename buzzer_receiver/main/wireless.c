@@ -17,11 +17,6 @@ void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
   packet received;
   memcpy(&received, data, sizeof(packet));
 
-  // const packet *received = (const packet *)data;
-
-
-  // printf("INCOMING team, %i\n", received->player_id);
-
   uint8_t incoming_mac[6];
   memcpy(incoming_mac, info->src_addr, 6);
 

@@ -7,10 +7,22 @@ QueueHandle_t buzz_queue;
 buzz_profile ba = {.length = 500, .buzzes = 1};
 buzz_profile bb = {.length = 200, .buzzes = 2};
 
-buzz_profile bn[] = {{.length = 500, .buzzes = 1},
-                     {.length = 200, .buzzes = 2}};
+buzz_profile bn[] = {{.length = 500, .buzzes = 1}, {.length = 200, .buzzes = 2}};
 
-void buzz(void *arg) {
+void init_buzz()
+{
+  buzz_queue = xQueueCreate(4, sizeof(buzz_profile *));
+  xTaskCreate(buzz, "buzz", 2048, NULL, 10, NULL);
+}
+
+void send_buzz(void *arg)
+{
+  buzz_profile *bp = (buzz_profile *)arg;
+  xQueueSend(buzz_queue, &bp, 0);
+}
+
+void buzz(void *arg) 
+{
   buzz_profile *b = (buzz_profile *)arg;
   while (1) {
     if (xQueueReceive(buzz_queue, &b, portMAX_DELAY)) {

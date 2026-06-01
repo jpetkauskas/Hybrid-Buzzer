@@ -27,14 +27,13 @@ packet incoming;
 
 void app_main(void) {
   q = xQueueCreate(10, sizeof(packet));
-  
-  buzz_queue = xQueueCreate(4, sizeof(buzz_profile *));
-  xTaskCreate(buzz, "buzz", 2048, NULL, 10, NULL);
-
-  xQueueSend(buzz_queue, &(buzz_profile *){&bn[0]}, 0);
 
   receiver_init_gpio();
   
+  init_buzz();
+
+  send_buzz(&bn[0]);
+
   receiver_init_wireless();
 
   while (1) 
