@@ -24,9 +24,12 @@ void send_buzz(void *arg)
 void buzz(void *arg) 
 {
   buzz_profile *b = (buzz_profile *)arg;
-  while (1) {
-    if (xQueueReceive(buzz_queue, &b, portMAX_DELAY)) {
-      for (int i = 0; i < b->buzzes; i++) {
+  while (1) 
+  {
+    if (xQueueReceive(buzz_queue, &b, portMAX_DELAY)) 
+    {
+      for (int i = 0; i < b->buzzes; i++) 
+      {
         gpio_set_level(BUZZ, 1);
         vTaskDelay(pdMS_TO_TICKS(b->length));
         gpio_set_level(BUZZ, 0);

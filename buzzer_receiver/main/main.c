@@ -23,18 +23,19 @@
 #include "config.h"
 #include "wireless.h"
 
-packet incoming;
+packet incoming; //incoming espnow data buffer
 
-void app_main(void) {
-  q = xQueueCreate(10, sizeof(packet));
+void app_main(void) 
+{
+  q = xQueueCreate(10, sizeof(packet)); //FreeRTOS packet
 
-  receiver_init_gpio();
+  receiver_init_gpio(); //GPIO helper
   
-  init_buzz();
+  init_buzz(); //initializes buzzer FreeRTOS overhead
 
-  send_buzz(&bn[0]);
+  send_buzz(&bn[0]); //buzz once on powerup
 
-  receiver_init_wireless();
+  receiver_init_wireless(); //espnow overhead + autopair, returns once ready 
 
   while (1) 
   {
