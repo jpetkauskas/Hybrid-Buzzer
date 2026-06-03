@@ -33,4 +33,8 @@ extern buzz_profile bb;
 
 extern buzz_profile bn[2];
 
+void init_buzz(void);
+
+void send_buzz(void *arg);
+
 void buzz(void *arg);

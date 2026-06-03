@@ -3,7 +3,7 @@
 packet data;
 QueueHandle_t q;
 
-uint8_t team = 1;
+uint8_t team = 0;
 
 static button_ctx_t btn_ctx[4] = {
     {SW_1, 1, 0, NULL},
