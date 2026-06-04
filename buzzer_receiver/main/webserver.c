@@ -3,22 +3,47 @@
 #include "esp_http_server.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include <stdio.h>
 #include <string.h>
 
 #define AP_SSID     "BuzzerReceiver"
 #define AP_MAX_CONN 4
 
-static esp_err_t hello_get_handler(httpd_req_t *req)
+/* Most recent buzz winner, updated via webserver_set_winner(). Negative team
+   means nobody has buzzed yet. 32-bit aligned ints are read/written
+   atomically on the ESP32, so no lock is needed for this simple display. */
+static volatile int winner_team = -1;
+static volatile int winner_player = -1;
+
+void webserver_set_winner(int team, int player)
 {
-  const char *resp = "Hello World";
+  winner_team = team;
+  winner_player = player;
+}
+
+static esp_err_t winner_get_handler(httpd_req_t *req)
+{
+  int team = winner_team;
+  int player = winner_player;
+
+  char resp[64];
+  if (team < 0)
+  {
+    snprintf(resp, sizeof(resp), "No buzz yet");
+  }
+  else
+  {
+    snprintf(resp, sizeof(resp), "Team %d, player %d", team, player);
+  }
+
   httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
-static const httpd_uri_t hello_uri = {
+static const httpd_uri_t winner_uri = {
     .uri = "/",
     .method = HTTP_GET,
-    .handler = hello_get_handler,
+    .handler = winner_get_handler,
     .user_ctx = NULL,
 };
 
@@ -50,6 +75,6 @@ void start_webserver(void)
   httpd_handle_t server = NULL;
   if (httpd_start(&server, &config) == ESP_OK)
   {
-    httpd_register_uri_handler(server, &hello_uri);
+    httpd_register_uri_handler(server, &winner_uri);
   }
 }

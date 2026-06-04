@@ -13,3 +13,9 @@
  * interfere with ESPNOW traffic.
  */
 void start_webserver(void);
+
+/*
+ * Update the buzz winner shown by the web page. Safe to call from the main
+ * loop; the served page reflects the most recent winner.
+ */
+void webserver_set_winner(int team, int player);
