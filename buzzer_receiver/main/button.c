@@ -1,4 +1,5 @@
 #include "button.h"
+#include "webserver.h"
 
 int64_t last_fire;
 
@@ -15,4 +16,6 @@ void IRAM_ATTR button_isr(void *arg) {
   }
 
   latch_state = false;
+
+  webserver_notify_clear_from_isr(); //push the cleared state to web clients
 }

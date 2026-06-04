@@ -1,49 +1,132 @@
 #include "webserver.h"
 
+#include "esp_attr.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Buzz latch owned by main/config: true while a winner is latched in, cleared
-   to false by the CLEAR button ISR. Gating the page on it means the display
-   resets to "No buzz yet" the instant clear is pressed, with no need to poke
-   the web server from interrupt context. */
+   to false by the CLEAR button ISR. The served status is gated on it, so a
+   clear shows up as "No buzz yet". */
 extern bool latch_state;
 
-#define AP_SSID      "BuzzerReceiver"
-#define AP_MAX_CONN  4
-#define POLL_MS      400 /* how often the page re-fetches the status text */
-
-/* Stringify so POLL_MS can be embedded directly in the page's script. */
-#define STR_(x) #x
-#define STR(x)  STR_(x)
+#define AP_SSID     "BuzzerReceiver"
+#define AP_MAX_CONN 4
+#define MAX_CLIENTS 4 /* concurrent live (SSE) viewers */
 
 /* Most recent buzz winner, updated via webserver_set_winner(). Only shown
-   while latch_state is true. 32-bit aligned ints are read/written atomically
-   on the ESP32, so no lock is needed for this simple display. */
+   while latch_state is true. */
 static volatile int winner_team = -1;
 static volatile int winner_player = -1;
+
+static httpd_handle_t server = NULL;
+
+/* Registry of connected SSE client sockets. Touched only from the httpd task
+   (the /events handler, the close callback, and the queued broadcast all run
+   there), so it needs no lock. */
+static int client_fds[MAX_CLIENTS];
+static int client_count = 0;
+
+/* Given whenever the status changes (buzz or clear) to wake the notifier. */
+static SemaphoreHandle_t event_sem = NULL;
+
+static void format_status(char *buf, size_t len)
+{
+  if (latch_state)
+  {
+    snprintf(buf, len, "Team %d, player %d", winner_team, winner_player);
+  }
+  else
+  {
+    snprintf(buf, len, "No buzz yet");
+  }
+}
+
+/* Push one SSE event to a single client. Returns false if the socket is dead. */
+static bool sse_send(int fd, const char *status)
+{
+  char event[80];
+  int n = snprintf(event, sizeof(event), "data: %s\n\n", status);
+  return httpd_socket_send(server, fd, event, n, 0) >= 0;
+}
+
+/* Runs in the httpd task (via httpd_queue_work): broadcast status to every
+   client, dropping any whose socket has died. */
+static void broadcast_work(void *arg)
+{
+  char status[64];
+  format_status(status, sizeof(status));
+
+  for (int i = 0; i < client_count;)
+  {
+    if (sse_send(client_fds[i], status))
+    {
+      i++;
+    }
+    else
+    {
+      client_fds[i] = client_fds[--client_count]; /* swap-remove dead client */
+    }
+  }
+}
+
+/* httpd_queue_work() is neither ISR-safe nor meant to run inline from the buzz
+   path, so a dedicated task bridges the change signal to a broadcast that runs
+   in the httpd task. */
+static void notifier_task(void *arg)
+{
+  for (;;)
+  {
+    xSemaphoreTake(event_sem, portMAX_DELAY);
+    if (server)
+    {
+      httpd_queue_work(server, broadcast_work, NULL);
+    }
+  }
+}
 
 void webserver_set_winner(int team, int player)
 {
   winner_team = team;
   winner_player = player;
+  if (event_sem)
+  {
+    xSemaphoreGive(event_sem);
+  }
 }
 
-/* Served once. The script polls /status and swaps the text in place, so the
-   page never reloads — only the ~20-byte status line travels on each tick. */
+void IRAM_ATTR webserver_notify_clear_from_isr(void)
+{
+  if (!event_sem)
+  {
+    return;
+  }
+  BaseType_t higher_priority_task_woken = pdFALSE;
+  xSemaphoreGiveFromISR(event_sem, &higher_priority_task_woken);
+  if (higher_priority_task_woken == pdTRUE)
+  {
+    portYIELD_FROM_ISR();
+  }
+}
+
+/* Served once. EventSource opens a long-lived /events stream and the handler
+   swaps the text in place, so the page never reloads and updates the instant
+   a buzz or clear happens. */
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
   static const char page[] =
       "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
       "<title>Buzzer</title></head><body><h1 id=\"s\">...</h1>"
       "<script>"
-      "async function p(){try{let r=await fetch('status');"
-      "document.getElementById('s').textContent=await r.text();}catch(e){}}"
-      "setInterval(p," STR(POLL_MS) ");p();"
+      "var e=new EventSource('events');"
+      "e.onmessage=function(ev){document.getElementById('s').textContent=ev.data;};"
       "</script></body></html>";
 
   httpd_resp_set_type(req, "text/html");
@@ -51,22 +134,54 @@ static esp_err_t root_get_handler(httpd_req_t *req)
   return ESP_OK;
 }
 
-/* Minimal payload polled by the page: the current winner, or "No buzz yet". */
-static esp_err_t status_get_handler(httpd_req_t *req)
+/* SSE stream. Sends raw headers (so we can keep writing via httpd_socket_send
+   from broadcast_work), registers the socket, and pushes the current state
+   once so a fresh page isn't blank. Returns immediately — never blocks. */
+static esp_err_t events_get_handler(httpd_req_t *req)
 {
-  char status[64];
-  if (latch_state)
+  static const char headers[] =
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/event-stream\r\n"
+      "Cache-Control: no-cache\r\n"
+      "Connection: keep-alive\r\n\r\n";
+
+  int fd = httpd_req_to_sockfd(req);
+  if (fd < 0)
   {
-    snprintf(status, sizeof(status), "Team %d, player %d", winner_team, winner_player);
-  }
-  else
-  {
-    snprintf(status, sizeof(status), "No buzz yet");
+    return ESP_FAIL;
   }
 
-  httpd_resp_set_type(req, "text/plain");
-  httpd_resp_send(req, status, HTTPD_RESP_USE_STRLEN);
+  if (httpd_socket_send(server, fd, headers, sizeof(headers) - 1, 0) < 0)
+  {
+    return ESP_FAIL;
+  }
+
+  if (client_count < MAX_CLIENTS)
+  {
+    client_fds[client_count++] = fd;
+  }
+
+  char status[64];
+  format_status(status, sizeof(status));
+  sse_send(fd, status);
+
   return ESP_OK;
+}
+
+/* Called by httpd when any socket closes; deregister SSE clients so a reused
+   fd is never mistaken for a live stream. We override the default close, so we
+   must close the socket ourselves. */
+static void on_socket_close(httpd_handle_t hd, int fd)
+{
+  for (int i = 0; i < client_count; i++)
+  {
+    if (client_fds[i] == fd)
+    {
+      client_fds[i] = client_fds[--client_count];
+      break;
+    }
+  }
+  close(fd);
 }
 
 static const httpd_uri_t root_uri = {
@@ -76,15 +191,18 @@ static const httpd_uri_t root_uri = {
     .user_ctx = NULL,
 };
 
-static const httpd_uri_t status_uri = {
-    .uri = "/status",
+static const httpd_uri_t events_uri = {
+    .uri = "/events",
     .method = HTTP_GET,
-    .handler = status_get_handler,
+    .handler = events_get_handler,
     .user_ctx = NULL,
 };
 
 void start_webserver(void)
 {
+  event_sem = xSemaphoreCreateBinary();
+  xTaskCreate(notifier_task, "sse_notifier", 3072, NULL, 5, NULL);
+
   /* Keep the AP on whatever channel ESPNOW is currently using so the single
      radio's channel is never changed out from under ESPNOW. */
   uint8_t primary_channel = 1;
@@ -108,10 +226,10 @@ void start_webserver(void)
   esp_wifi_set_config(WIFI_IF_AP, &ap_config);
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  httpd_handle_t server = NULL;
+  config.close_fn = on_socket_close;
   if (httpd_start(&server, &config) == ESP_OK)
   {
     httpd_register_uri_handler(server, &root_uri);
-    httpd_register_uri_handler(server, &status_uri);
+    httpd_register_uri_handler(server, &events_uri);
   }
 }

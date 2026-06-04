@@ -15,7 +15,14 @@
 void start_webserver(void);
 
 /*
- * Update the buzz winner shown by the web page. Safe to call from the main
- * loop; the served page reflects the most recent winner.
+ * Update the buzz winner shown by the web page and push it to connected
+ * clients. Call from task context (e.g. the main loop).
  */
 void webserver_set_winner(int team, int player);
+
+/*
+ * Notify the web server that the buzz was cleared, so connected clients are
+ * updated immediately. ISR-safe — intended to be called from the CLEAR button
+ * interrupt handler.
+ */
+void webserver_notify_clear_from_isr(void);
