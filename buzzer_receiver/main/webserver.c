@@ -10,6 +10,7 @@
 #include "freertos/task.h"
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -25,11 +26,18 @@ void IRAM_ATTR clear_buzz(void);
 #define AP_MAX_CONN     4
 #define MAX_CLIENTS     4    /* concurrent live (SSE) viewers */
 #define DHCP_OFFER_DNS  0x02 /* OFFER_DNS bit: hand out a DNS server in DHCP */
+#define NUM_TEAMS        2 /* matches the two transmitters */
+#define PLAYERS_PER_TEAM 4 /* player_id is 1-based (1..4); see main.c LED index */
 
 /* Most recent buzz winner, updated via webserver_set_winner(). Only shown
-   while latch_state is true. */
+   while latch_state is true. team is 0-based, player is 1-based. */
 static volatile int winner_team = -1;
 static volatile int winner_player = -1;
+
+/* Per-player scores, indexed [team][player-1]. Adjusted only from the httpd
+   task (score/reset handlers), so they need no lock. A team's total is the
+   sum of its players. */
+static int player_scores[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};
 
 static httpd_handle_t server = NULL;
 
@@ -54,24 +62,77 @@ static void format_status(char *buf, size_t len)
   }
 }
 
-/* Push one SSE event to a single client. Returns false if the socket is dead. */
-static bool sse_send(int fd, const char *status)
-{
-  char event[80];
-  int n = snprintf(event, sizeof(event), "data: %s\n\n", status);
-  return httpd_socket_send(server, fd, event, n, 0) >= 0;
-}
-
-/* Runs in the httpd task (via httpd_queue_work): broadcast status to every
-   client, dropping any whose socket has died. */
-static void broadcast_work(void *arg)
+/* Build the JSON state pushed to clients: buzz status, whether a buzz is
+   active (and who), per-team totals, and per-player scores. The status text is
+   fully controlled and contains no JSON-special characters, so it can be
+   embedded without escaping. Every append is guarded so a full buffer can only
+   truncate, never overflow. */
+static void format_state_json(char *buf, size_t len)
 {
   char status[64];
   format_status(status, sizeof(status));
 
+  int n = 0;
+  if (n < (int)len)
+  {
+    n += snprintf(buf + n, len - n,
+                  "{\"status\":\"%s\",\"active\":%s,\"wteam\":%d,\"wplayer\":%d,\"teams\":[",
+                  status, latch_state ? "true" : "false", winner_team, winner_player);
+  }
+
+  for (int t = 0; t < NUM_TEAMS && n < (int)len; t++)
+  {
+    int total = 0;
+    for (int p = 0; p < PLAYERS_PER_TEAM; p++)
+    {
+      total += player_scores[t][p];
+    }
+    n += snprintf(buf + n, len - n, "%s%d", t ? "," : "", total);
+  }
+
+  if (n < (int)len)
+  {
+    n += snprintf(buf + n, len - n, "],\"players\":[");
+  }
+
+  for (int t = 0; t < NUM_TEAMS && n < (int)len; t++)
+  {
+    n += snprintf(buf + n, len - n, "%s[", t ? "," : "");
+    for (int p = 0; p < PLAYERS_PER_TEAM && n < (int)len; p++)
+    {
+      n += snprintf(buf + n, len - n, "%s%d", p ? "," : "", player_scores[t][p]);
+    }
+    if (n < (int)len)
+    {
+      n += snprintf(buf + n, len - n, "]");
+    }
+  }
+
+  if (n < (int)len)
+  {
+    snprintf(buf + n, len - n, "]}");
+  }
+}
+
+/* Push one SSE event (the JSON state payload) to a single client. Returns
+   false if the socket is dead. */
+static bool sse_send(int fd, const char *payload)
+{
+  char event[320];
+  int n = snprintf(event, sizeof(event), "data: %s\n\n", payload);
+  return httpd_socket_send(server, fd, event, n, 0) >= 0;
+}
+
+/* Runs in the httpd task (via httpd_queue_work): broadcast state to every
+   client, dropping any whose socket has died. */
+static void broadcast_work(void *arg)
+{
+  char payload[256];
+  format_state_json(payload, sizeof(payload));
+
   for (int i = 0; i < client_count;)
   {
-    if (sse_send(client_fds[i], status))
+    if (sse_send(client_fds[i], payload))
     {
       i++;
     }
@@ -121,24 +182,19 @@ void IRAM_ATTR webserver_notify_clear_from_isr(void)
   }
 }
 
+/* index.html is embedded into the firmware (see EMBED_TXTFILES in CMakeLists);
+   EMBED_TXTFILES null-terminates it, so it can be served as a C string. */
+extern const char index_html_start[] asm("_binary_index_html_start");
+
 /* Catch-all page handler. Served for any path (see catch_all_uri) so every URL
    a client tries — including OS captive-portal probes — lands on the buzzer
-   page. EventSource opens a long-lived /events stream and the handler swaps the
-   text in place, so the page never reloads and updates the instant a buzz or
-   clear happens. */
+   page. The page opens a long-lived /events stream and updates in place, so it
+   never reloads and reflects buzzes, clears, and scores the instant they
+   change. */
 static esp_err_t page_get_handler(httpd_req_t *req)
 {
-  static const char page[] =
-      "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-      "<title>Buzzer</title></head><body><h1 id=\"s\">...</h1>"
-      "<button onclick=\"fetch('clear',{method:'POST'})\">Clear</button>"
-      "<script>"
-      "var e=new EventSource('events');"
-      "e.onmessage=function(ev){document.getElementById('s').textContent=ev.data;};"
-      "</script></body></html>";
-
   httpd_resp_set_type(req, "text/html");
-  httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
+  httpd_resp_send(req, index_html_start, HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
@@ -169,9 +225,9 @@ static esp_err_t events_get_handler(httpd_req_t *req)
     client_fds[client_count++] = fd;
   }
 
-  char status[64];
-  format_status(status, sizeof(status));
-  sse_send(fd, status);
+  char payload[256];
+  format_state_json(payload, sizeof(payload));
+  sse_send(fd, payload);
 
   return ESP_OK;
 }
@@ -182,6 +238,49 @@ static esp_err_t events_get_handler(httpd_req_t *req)
 static esp_err_t clear_post_handler(httpd_req_t *req)
 {
   clear_buzz();
+  broadcast_work(NULL);
+  httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+/* Award points to the player who buzzed: POST /score?delta=<d>. The points go
+   to the current buzz winner (team/player), so only a latched-in buzz can
+   score — mirroring real play, where you award whoever rang in. Runs in the
+   httpd task, so it updates state and broadcasts directly. */
+static esp_err_t score_post_handler(httpd_req_t *req)
+{
+  char query[32];
+  char value[12];
+  int delta = 0;
+
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+      httpd_query_key_value(query, "delta", value, sizeof(value)) == ESP_OK)
+  {
+    delta = atoi(value);
+  }
+
+  if (latch_state && winner_team >= 0 && winner_team < NUM_TEAMS &&
+      winner_player >= 1 && winner_player <= PLAYERS_PER_TEAM)
+  {
+    player_scores[winner_team][winner_player - 1] += delta;
+  }
+
+  clear_buzz(); /* awarding/penalizing ends the current buzz, like CLEAR */
+  broadcast_work(NULL);
+  httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+/* Zero every player's score: POST /resetscores. */
+static esp_err_t resetscores_post_handler(httpd_req_t *req)
+{
+  for (int t = 0; t < NUM_TEAMS; t++)
+  {
+    for (int p = 0; p < PLAYERS_PER_TEAM; p++)
+    {
+      player_scores[t][p] = 0;
+    }
+  }
   broadcast_work(NULL);
   httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
@@ -214,6 +313,20 @@ static const httpd_uri_t clear_uri = {
     .uri = "/clear",
     .method = HTTP_POST,
     .handler = clear_post_handler,
+    .user_ctx = NULL,
+};
+
+static const httpd_uri_t score_uri = {
+    .uri = "/score",
+    .method = HTTP_POST,
+    .handler = score_post_handler,
+    .user_ctx = NULL,
+};
+
+static const httpd_uri_t resetscores_uri = {
+    .uri = "/resetscores",
+    .method = HTTP_POST,
+    .handler = resetscores_post_handler,
     .user_ctx = NULL,
 };
 
@@ -280,6 +393,8 @@ void start_webserver(void)
   {
     httpd_register_uri_handler(server, &events_uri);
     httpd_register_uri_handler(server, &clear_uri);
+    httpd_register_uri_handler(server, &score_uri);
+    httpd_register_uri_handler(server, &resetscores_uri);
     httpd_register_uri_handler(server, &catch_all_uri);
   }
 }

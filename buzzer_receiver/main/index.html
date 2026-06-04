@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Buzzer</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      text-align: center;
+      margin: 0;
+      padding: 1rem;
+    }
+    #status {
+      font-size: 3rem;
+      font-weight: bold;
+      margin: 1rem 0;
+      min-height: 3.5rem;
+    }
+    #scoring button {
+      font-size: 1.8rem;
+      padding: 1.1rem 1.6rem;
+      margin: 0.4rem;
+    }
+    #scoring button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .bar button {
+      font-size: 1.3rem;
+      padding: 0.7rem 1.2rem;
+      margin: 0.3rem;
+    }
+    .teams {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+    .team {
+      flex: 1 1 18rem;
+      max-width: 24rem;
+      padding: 1rem;
+      border: 3px solid #ccc;
+      border-radius: 1rem;
+    }
+    .team h2 {
+      font-size: 2rem;
+      margin: 0;
+    }
+    .total {
+      font-size: 4.5rem;
+      font-weight: bold;
+      line-height: 1;
+      margin: 0.3rem 0 0.8rem;
+    }
+    .player {
+      display: flex;
+      justify-content: space-between;
+      font-size: 1.6rem;
+      padding: 0.4rem 0.6rem;
+      border-radius: 0.5rem;
+    }
+    .player.buzzed {
+      background: #fff2a8;
+      font-weight: bold;
+    }
+    button {
+      border: none;
+      border-radius: 0.7rem;
+      cursor: pointer;
+    }
+    .power { background: #ffd54a; }
+    .std   { background: #8fe18f; }
+    .neg   { background: #ff8a8a; }
+  </style>
+</head>
+<body>
+  <div id="status">...</div>
+
+  <div id="scoring">
+    <button class="power" onclick="score(15)">Power (+15)</button>
+    <button class="std" onclick="score(10)">Standard (+10)</button>
+    <button class="neg" onclick="score(-5)">Neg (-5)</button>
+  </div>
+
+  <div class="bar">
+    <button onclick="clr()">Clear</button>
+    <button onclick="resetScores()">Reset scores</button>
+  </div>
+
+  <div id="teams" class="teams"></div>
+
+  <script>
+    var TEAMS = 2;
+    var PLAYERS = 4; // player_id is 1-based (1..PLAYERS)
+
+    // Points go to whoever buzzed in; the device attributes them.
+    function score(delta) { fetch("score?delta=" + delta, { method: "POST" }); }
+    function clr() { fetch("clear", { method: "POST" }); }
+    function resetScores() { fetch("resetscores", { method: "POST" }); }
+
+    // Build a panel per team with a row per player.
+    var teams = document.getElementById("teams");
+    for (var t = 0; t < TEAMS; t++) {
+      var panel = document.createElement("div");
+      panel.className = "team";
+      var html = "<h2>Team " + t + "</h2>"
+               + "<div class=\"total\" id=\"t" + t + "\">0</div>";
+      for (var p = 1; p <= PLAYERS; p++) {
+        html += "<div class=\"player\" id=\"p" + t + "_" + p + "\">"
+              + "<span>Player " + p + "</span>"
+              + "<span id=\"ps" + t + "_" + p + "\">0</span></div>";
+      }
+      panel.innerHTML = html;
+      teams.appendChild(panel);
+    }
+
+    var scoreButtons = document.querySelectorAll("#scoring button");
+
+    var es = new EventSource("events");
+    es.onmessage = function (ev) {
+      var d = JSON.parse(ev.data);
+      document.getElementById("status").textContent = d.status;
+
+      // Only allow scoring while a buzz is latched in.
+      for (var b = 0; b < scoreButtons.length; b++) {
+        scoreButtons[b].disabled = !d.active;
+      }
+
+      for (var t = 0; t < d.teams.length; t++) {
+        document.getElementById("t" + t).textContent = d.teams[t];
+        for (var p = 0; p < d.players[t].length; p++) {
+          var pid = p + 1;
+          var ps = document.getElementById("ps" + t + "_" + pid);
+          if (ps) ps.textContent = d.players[t][p];
+          var row = document.getElementById("p" + t + "_" + pid);
+          if (row) {
+            row.classList.toggle("buzzed",
+              d.active && d.wteam === t && d.wplayer === pid);
+          }
+        }
+      }
+    };
+  </script>
+</body>
+</html>
