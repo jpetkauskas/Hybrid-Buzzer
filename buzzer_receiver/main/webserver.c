@@ -3,15 +3,27 @@
 #include "esp_http_server.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
-#define AP_SSID     "BuzzerReceiver"
-#define AP_MAX_CONN 4
+/* Buzz latch owned by main/config: true while a winner is latched in, cleared
+   to false by the CLEAR button ISR. Gating the page on it means the display
+   resets to "No buzz yet" the instant clear is pressed, with no need to poke
+   the web server from interrupt context. */
+extern bool latch_state;
 
-/* Most recent buzz winner, updated via webserver_set_winner(). Negative team
-   means nobody has buzzed yet. 32-bit aligned ints are read/written
-   atomically on the ESP32, so no lock is needed for this simple display. */
+#define AP_SSID      "BuzzerReceiver"
+#define AP_MAX_CONN  4
+#define POLL_MS      400 /* how often the page re-fetches the status text */
+
+/* Stringify so POLL_MS can be embedded directly in the page's script. */
+#define STR_(x) #x
+#define STR(x)  STR_(x)
+
+/* Most recent buzz winner, updated via webserver_set_winner(). Only shown
+   while latch_state is true. 32-bit aligned ints are read/written atomically
+   on the ESP32, so no lock is needed for this simple display. */
 static volatile int winner_team = -1;
 static volatile int winner_player = -1;
 
@@ -21,29 +33,53 @@ void webserver_set_winner(int team, int player)
   winner_player = player;
 }
 
-static esp_err_t winner_get_handler(httpd_req_t *req)
+/* Served once. The script polls /status and swaps the text in place, so the
+   page never reloads — only the ~20-byte status line travels on each tick. */
+static esp_err_t root_get_handler(httpd_req_t *req)
 {
-  int team = winner_team;
-  int player = winner_player;
+  static const char page[] =
+      "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+      "<title>Buzzer</title></head><body><h1 id=\"s\">...</h1>"
+      "<script>"
+      "async function p(){try{let r=await fetch('status');"
+      "document.getElementById('s').textContent=await r.text();}catch(e){}}"
+      "setInterval(p," STR(POLL_MS) ");p();"
+      "</script></body></html>";
 
-  char resp[64];
-  if (team < 0)
-  {
-    snprintf(resp, sizeof(resp), "No buzz yet");
-  }
-  else
-  {
-    snprintf(resp, sizeof(resp), "Team %d, player %d", team, player);
-  }
-
-  httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
-static const httpd_uri_t winner_uri = {
+/* Minimal payload polled by the page: the current winner, or "No buzz yet". */
+static esp_err_t status_get_handler(httpd_req_t *req)
+{
+  char status[64];
+  if (latch_state)
+  {
+    snprintf(status, sizeof(status), "Team %d, player %d", winner_team, winner_player);
+  }
+  else
+  {
+    snprintf(status, sizeof(status), "No buzz yet");
+  }
+
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, status, HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+static const httpd_uri_t root_uri = {
     .uri = "/",
     .method = HTTP_GET,
-    .handler = winner_get_handler,
+    .handler = root_get_handler,
+    .user_ctx = NULL,
+};
+
+static const httpd_uri_t status_uri = {
+    .uri = "/status",
+    .method = HTTP_GET,
+    .handler = status_get_handler,
     .user_ctx = NULL,
 };
 
@@ -75,6 +111,7 @@ void start_webserver(void)
   httpd_handle_t server = NULL;
   if (httpd_start(&server, &config) == ESP_OK)
   {
-    httpd_register_uri_handler(server, &winner_uri);
+    httpd_register_uri_handler(server, &root_uri);
+    httpd_register_uri_handler(server, &status_uri);
   }
 }
