@@ -1,5 +1,6 @@
 #include "webserver.h"
 
+#include "captive_dns.h"
 #include "esp_attr.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
@@ -17,9 +18,10 @@
    clear shows up as "No buzz yet". */
 extern bool latch_state;
 
-#define AP_SSID     "BuzzerReceiver"
-#define AP_MAX_CONN 4
-#define MAX_CLIENTS 4 /* concurrent live (SSE) viewers */
+#define AP_SSID         "BuzzerReceiver"
+#define AP_MAX_CONN     4
+#define MAX_CLIENTS     4    /* concurrent live (SSE) viewers */
+#define DHCP_OFFER_DNS  0x02 /* OFFER_DNS bit: hand out a DNS server in DHCP */
 
 /* Most recent buzz winner, updated via webserver_set_winner(). Only shown
    while latch_state is true. */
@@ -116,10 +118,12 @@ void IRAM_ATTR webserver_notify_clear_from_isr(void)
   }
 }
 
-/* Served once. EventSource opens a long-lived /events stream and the handler
-   swaps the text in place, so the page never reloads and updates the instant
-   a buzz or clear happens. */
-static esp_err_t root_get_handler(httpd_req_t *req)
+/* Catch-all page handler. Served for any path (see catch_all_uri) so every URL
+   a client tries — including OS captive-portal probes — lands on the buzzer
+   page. EventSource opens a long-lived /events stream and the handler swaps the
+   text in place, so the page never reloads and updates the instant a buzz or
+   clear happens. */
+static esp_err_t page_get_handler(httpd_req_t *req)
 {
   static const char page[] =
       "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
@@ -184,17 +188,18 @@ static void on_socket_close(httpd_handle_t hd, int fd)
   close(fd);
 }
 
-static const httpd_uri_t root_uri = {
-    .uri = "/",
-    .method = HTTP_GET,
-    .handler = root_get_handler,
-    .user_ctx = NULL,
-};
-
 static const httpd_uri_t events_uri = {
     .uri = "/events",
     .method = HTTP_GET,
     .handler = events_get_handler,
+    .user_ctx = NULL,
+};
+
+/* Registered last so the more specific /events wins; matches everything else. */
+static const httpd_uri_t catch_all_uri = {
+    .uri = "/*",
+    .method = HTTP_GET,
+    .handler = page_get_handler,
     .user_ctx = NULL,
 };
 
@@ -225,11 +230,33 @@ void start_webserver(void)
   esp_wifi_set_mode(WIFI_MODE_APSTA);
   esp_wifi_set_config(WIFI_IF_AP, &ap_config);
 
+  /* Captive portal: make the AP's DHCP hand out this device as the DNS server,
+     then run a DNS server that resolves every name to the AP's IP. Any URL a
+     connected client opens then lands here — no per-client setup, no IP to
+     type. */
+  esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  esp_netif_ip_info_t ip_info;
+  esp_netif_get_ip_info(ap_netif, &ip_info);
+
+  esp_netif_dns_info_t dns_info = {0};
+  dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+  dns_info.ip.u_addr.ip4 = ip_info.ip;
+
+  uint8_t offer_dns = DHCP_OFFER_DNS;
+  esp_netif_dhcps_stop(ap_netif);
+  esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_info);
+  esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER,
+                         &offer_dns, sizeof(offer_dns));
+  esp_netif_dhcps_start(ap_netif);
+
+  start_captive_dns(ip_info.ip);
+
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.close_fn = on_socket_close;
+  config.uri_match_fn = httpd_uri_match_wildcard; /* enables the catch-all route */
   if (httpd_start(&server, &config) == ESP_OK)
   {
-    httpd_register_uri_handler(server, &root_uri);
     httpd_register_uri_handler(server, &events_uri);
+    httpd_register_uri_handler(server, &catch_all_uri);
   }
 }
