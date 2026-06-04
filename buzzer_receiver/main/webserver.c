@@ -18,6 +18,9 @@
    clear shows up as "No buzz yet". */
 extern bool latch_state;
 
+/* Defined in button.c: the same reset the physical CLEAR button performs. */
+void IRAM_ATTR clear_buzz(void);
+
 #define AP_SSID         "BuzzerReceiver"
 #define AP_MAX_CONN     4
 #define MAX_CLIENTS     4    /* concurrent live (SSE) viewers */
@@ -128,6 +131,7 @@ static esp_err_t page_get_handler(httpd_req_t *req)
   static const char page[] =
       "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
       "<title>Buzzer</title></head><body><h1 id=\"s\">...</h1>"
+      "<button onclick=\"fetch('clear',{method:'POST'})\">Clear</button>"
       "<script>"
       "var e=new EventSource('events');"
       "e.onmessage=function(ev){document.getElementById('s').textContent=ev.data;};"
@@ -172,6 +176,17 @@ static esp_err_t events_get_handler(httpd_req_t *req)
   return ESP_OK;
 }
 
+/* Web "Clear" button. Performs the same reset as the physical CLEAR button,
+   then pushes the cleared state to every client. Runs in the httpd task (same
+   context as broadcast_work), so it can broadcast directly. */
+static esp_err_t clear_post_handler(httpd_req_t *req)
+{
+  clear_buzz();
+  broadcast_work(NULL);
+  httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
 /* Called by httpd when any socket closes; deregister SSE clients so a reused
    fd is never mistaken for a live stream. We override the default close, so we
    must close the socket ourselves. */
@@ -192,6 +207,13 @@ static const httpd_uri_t events_uri = {
     .uri = "/events",
     .method = HTTP_GET,
     .handler = events_get_handler,
+    .user_ctx = NULL,
+};
+
+static const httpd_uri_t clear_uri = {
+    .uri = "/clear",
+    .method = HTTP_POST,
+    .handler = clear_post_handler,
     .user_ctx = NULL,
 };
 
@@ -257,6 +279,7 @@ void start_webserver(void)
   if (httpd_start(&server, &config) == ESP_OK)
   {
     httpd_register_uri_handler(server, &events_uri);
+    httpd_register_uri_handler(server, &clear_uri);
     httpd_register_uri_handler(server, &catch_all_uri);
   }
 }
