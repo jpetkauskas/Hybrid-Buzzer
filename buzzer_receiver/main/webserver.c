@@ -39,6 +39,16 @@ static volatile int winner_player = -1;
    sum of its players. */
 static int player_scores[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};
 
+/* Index of the current packet question. Advanced on each clear/score cycle and
+   broadcast to clients, which hold the parsed packet and render questions[q].
+   Written only from the httpd task (see clear_pending_from_isr for the ISR
+   path), so it needs no lock. */
+static int question_index = 0;
+
+/* Set by the CLEAR ISR so the httpd-task broadcast advances the question index,
+   keeping all index writes on one task. */
+static volatile bool clear_pending_from_isr = false;
+
 static httpd_handle_t server = NULL;
 
 /* Registry of connected SSE client sockets. Touched only from the httpd task
@@ -76,8 +86,9 @@ static void format_state_json(char *buf, size_t len)
   if (n < (int)len)
   {
     n += snprintf(buf + n, len - n,
-                  "{\"status\":\"%s\",\"active\":%s,\"wteam\":%d,\"wplayer\":%d,\"teams\":[",
-                  status, latch_state ? "true" : "false", winner_team, winner_player);
+                  "{\"status\":\"%s\",\"active\":%s,\"wteam\":%d,\"wplayer\":%d,\"q\":%d,\"teams\":[",
+                  status, latch_state ? "true" : "false", winner_team, winner_player,
+                  question_index);
   }
 
   for (int t = 0; t < NUM_TEAMS && n < (int)len; t++)
@@ -127,6 +138,15 @@ static bool sse_send(int fd, const char *payload)
    client, dropping any whose socket has died. */
 static void broadcast_work(void *arg)
 {
+  /* A physical CLEAR press flagged from the ISR advances the question here, in
+     the httpd task, so question_index is never written from interrupt context.
+     Web clear/score advance it directly in their handlers. */
+  if (clear_pending_from_isr)
+  {
+    clear_pending_from_isr = false;
+    question_index++;
+  }
+
   char payload[256];
   format_state_json(payload, sizeof(payload));
 
@@ -174,6 +194,7 @@ void IRAM_ATTR webserver_notify_clear_from_isr(void)
   {
     return;
   }
+  clear_pending_from_isr = true; /* broadcast_work advances the question */
   BaseType_t higher_priority_task_woken = pdFALSE;
   xSemaphoreGiveFromISR(event_sem, &higher_priority_task_woken);
   if (higher_priority_task_woken == pdTRUE)
@@ -238,6 +259,7 @@ static esp_err_t events_get_handler(httpd_req_t *req)
 static esp_err_t clear_post_handler(httpd_req_t *req)
 {
   clear_buzz();
+  question_index++; /* each clear/arm cycle advances to the next question */
   broadcast_work(NULL);
   httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
@@ -265,7 +287,8 @@ static esp_err_t score_post_handler(httpd_req_t *req)
     player_scores[winner_team][winner_player - 1] += delta;
   }
 
-  clear_buzz(); /* awarding/penalizing ends the current buzz, like CLEAR */
+  clear_buzz();     /* awarding/penalizing ends the current buzz, like CLEAR */
+  question_index++; /* and advances to the next question */
   broadcast_work(NULL);
   httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
@@ -281,6 +304,36 @@ static esp_err_t resetscores_post_handler(httpd_req_t *req)
       player_scores[t][p] = 0;
     }
   }
+  broadcast_work(NULL);
+  httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+/* Manually move through the packet (for skips, corrections, restart):
+   POST /nav?to=<n> jumps to an absolute index, POST /nav?d=<±n> moves
+   relative. Index is clamped at 0; the page clamps the upper end. */
+static esp_err_t nav_post_handler(httpd_req_t *req)
+{
+  char query[32];
+  char value[12];
+
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+  {
+    if (httpd_query_key_value(query, "to", value, sizeof(value)) == ESP_OK)
+    {
+      question_index = atoi(value);
+    }
+    else if (httpd_query_key_value(query, "d", value, sizeof(value)) == ESP_OK)
+    {
+      question_index += atoi(value);
+    }
+  }
+
+  if (question_index < 0)
+  {
+    question_index = 0;
+  }
+
   broadcast_work(NULL);
   httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
@@ -327,6 +380,13 @@ static const httpd_uri_t resetscores_uri = {
     .uri = "/resetscores",
     .method = HTTP_POST,
     .handler = resetscores_post_handler,
+    .user_ctx = NULL,
+};
+
+static const httpd_uri_t nav_uri = {
+    .uri = "/nav",
+    .method = HTTP_POST,
+    .handler = nav_post_handler,
     .user_ctx = NULL,
 };
 
@@ -395,6 +455,7 @@ void start_webserver(void)
     httpd_register_uri_handler(server, &clear_uri);
     httpd_register_uri_handler(server, &score_uri);
     httpd_register_uri_handler(server, &resetscores_uri);
+    httpd_register_uri_handler(server, &nav_uri);
     httpd_register_uri_handler(server, &catch_all_uri);
   }
 }

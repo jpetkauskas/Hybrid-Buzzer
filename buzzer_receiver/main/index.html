@@ -10,74 +10,65 @@
       text-align: center;
       margin: 0;
       padding: 1rem;
+      max-width: 60rem;
+      margin: 0 auto;
     }
     #status {
-      font-size: 3rem;
+      font-size: 2.4rem;
       font-weight: bold;
+      margin: 0.5rem 0;
+      min-height: 2.8rem;
+    }
+    #question {
+      text-align: left;
+      border: 2px solid #ccc;
+      border-radius: 0.8rem;
+      padding: 1rem 1.2rem;
       margin: 1rem 0;
-      min-height: 3.5rem;
+      font-size: 1.35rem;
+      line-height: 1.5;
     }
+    .qhead {
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #666;
+      margin-bottom: 0.6rem;
+    }
+    .ans {
+      margin-top: 0.5rem;
+      padding: 0.4rem 0.6rem;
+      background: #eef5ff;
+      border-left: 4px solid #4a90d9;
+      font-weight: bold;
+    }
+    .bpart { margin-top: 0.9rem; }
     #scoring button {
-      font-size: 1.8rem;
-      padding: 1.1rem 1.6rem;
-      margin: 0.4rem;
-    }
-    #scoring button:disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
-    }
-    .bar button {
-      font-size: 1.3rem;
-      padding: 0.7rem 1.2rem;
+      font-size: 1.7rem;
+      padding: 1rem 1.5rem;
       margin: 0.3rem;
     }
-    .teams {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 1rem;
-      margin-top: 1.5rem;
-    }
-    .team {
-      flex: 1 1 18rem;
-      max-width: 24rem;
-      padding: 1rem;
-      border: 3px solid #ccc;
-      border-radius: 1rem;
-    }
-    .team h2 {
-      font-size: 2rem;
-      margin: 0;
-    }
-    .total {
-      font-size: 4.5rem;
-      font-weight: bold;
-      line-height: 1;
-      margin: 0.3rem 0 0.8rem;
-    }
-    .player {
-      display: flex;
-      justify-content: space-between;
-      font-size: 1.6rem;
-      padding: 0.4rem 0.6rem;
-      border-radius: 0.5rem;
-    }
-    .player.buzzed {
-      background: #fff2a8;
-      font-weight: bold;
-    }
-    button {
-      border: none;
-      border-radius: 0.7rem;
-      cursor: pointer;
-    }
+    #scoring button:disabled { opacity: 0.35; cursor: not-allowed; }
+    .bar button { font-size: 1.2rem; padding: 0.6rem 1rem; margin: 0.25rem; }
+    .teams { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; margin-top: 1.2rem; }
+    .team { flex: 1 1 18rem; max-width: 24rem; padding: 1rem; border: 3px solid #ccc; border-radius: 1rem; }
+    .team h2 { font-size: 2rem; margin: 0; }
+    .total { font-size: 4rem; font-weight: bold; line-height: 1; margin: 0.3rem 0 0.8rem; }
+    .player { display: flex; justify-content: space-between; font-size: 1.5rem; padding: 0.4rem 0.6rem; border-radius: 0.5rem; }
+    .player.buzzed { background: #fff2a8; font-weight: bold; }
+    button { border: none; border-radius: 0.7rem; cursor: pointer; }
     .power { background: #ffd54a; }
     .std   { background: #8fe18f; }
     .neg   { background: #ff8a8a; }
+    #setup { margin-top: 1.5rem; text-align: left; }
+    #packet { width: 100%; box-sizing: border-box; font-family: monospace; }
+    #loadinfo { margin-top: 0.4rem; color: #444; }
   </style>
 </head>
 <body>
   <div id="status">...</div>
+
+  <div id="question"><em>No packet loaded.</em></div>
 
   <div id="scoring">
     <button class="power" onclick="score(15)">Power (+15)</button>
@@ -87,33 +78,157 @@
 
   <div class="bar">
     <button onclick="clr()">Clear</button>
+    <button onclick="nav(-1)">&#9664; Prev</button>
+    <button onclick="nav(1)">Next &#9654;</button>
+    <button onclick="navTo(0)">Restart packet</button>
     <button onclick="resetScores()">Reset scores</button>
   </div>
 
   <div id="teams" class="teams"></div>
 
+  <details id="setup">
+    <summary>Load packet</summary>
+    <p>Paste a full packet below, then press <b>Load packet</b>. Questions advance on each clear/score; use Prev/Next to skip.</p>
+    <textarea id="packet" rows="10" placeholder="Paste full packet here..."></textarea>
+    <button onclick="loadPacket()">Load packet</button>
+    <div id="loadinfo"></div>
+  </details>
+
   <script>
     var TEAMS = 2;
     var PLAYERS = 4; // player_id is 1-based (1..PLAYERS)
+    var QUESTIONS = [];
+    var curQ = 0;
 
-    // Points go to whoever buzzed in; the device attributes them.
     function score(delta) { fetch("score?delta=" + delta, { method: "POST" }); }
     function clr() { fetch("clear", { method: "POST" }); }
     function resetScores() { fetch("resetscores", { method: "POST" }); }
+    function nav(d) { fetch("nav?d=" + d, { method: "POST" }); }
+    function navTo(n) { fetch("nav?to=" + n, { method: "POST" }); }
+
+    function esc(s) {
+      return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    /* ---- Packet parsing ----
+       Items start with "N:" (the number repeats: tossup then bonus). A bonus
+       contains bracketed part markers like [10h]; a tossup does not. Text and
+       even ANSWER lines wrap across hard line breaks, so each segment runs
+       until the next marker. The trailing "<...>" metadata line is dropped. */
+    function isAnswer(ln) { return /^\s*ANSWER\s*:/i.test(ln); }
+    function isPart(ln) { return /^\s*\[\s*\d+\s*[a-z]?\s*\]/i.test(ln); }
+    function isMeta(ln) { return /^\s*</.test(ln); }
+    function stripAnswer(ln) { return ln.replace(/^\s*ANSWER\s*:/i, "").trim(); }
+
+    function parseTossup(b) {
+      var q = [], ans = [], inAns = false;
+      for (var i = 0; i < b.lines.length; i++) {
+        var ln = b.lines[i];
+        if (isMeta(ln)) break;
+        if (isAnswer(ln)) { inAns = true; ans.push(stripAnswer(ln)); continue; }
+        if (inAns) ans.push(ln.trim()); else q.push(ln.trim());
+      }
+      return { num: b.num, type: "tossup", text: q.join(" ").trim(), answer: ans.join(" ").trim() };
+    }
+
+    function parseBonus(b) {
+      var leadin = [], parts = [], cur = null, inLeadin = true;
+      for (var i = 0; i < b.lines.length; i++) {
+        var ln = b.lines[i];
+        if (isMeta(ln)) break;
+        var pm = ln.match(/^\s*\[\s*(\d+)\s*([a-z]?)\s*\]\s*(.*)$/i);
+        if (pm) {
+          if (cur) parts.push(cur);
+          cur = { value: parseInt(pm[1], 10), diff: pm[2].toLowerCase(), text: [pm[3]], answer: [], inAns: false };
+          inLeadin = false;
+          continue;
+        }
+        if (isAnswer(ln)) { if (cur) { cur.inAns = true; cur.answer.push(stripAnswer(ln)); } continue; }
+        if (inLeadin) leadin.push(ln.trim());
+        else if (cur) { (cur.inAns ? cur.answer : cur.text).push(ln.trim()); }
+      }
+      if (cur) parts.push(cur);
+      return {
+        num: b.num, type: "bonus", leadin: leadin.join(" ").trim(),
+        parts: parts.map(function (p) {
+          return { value: p.value, diff: p.diff, text: p.text.join(" ").trim(), answer: p.answer.join(" ").trim() };
+        })
+      };
+    }
+
+    function parsePacket(raw) {
+      var lines = raw.split(/\r?\n/);
+      var start = 0;
+      for (var i = 0; i < lines.length; i++) {
+        if (/^\s*packet\b/i.test(lines[i])) { start = i + 1; break; }
+      }
+      var blocks = [], cur = null, last = -1;
+      for (var j = start; j < lines.length; j++) {
+        var m = lines[j].match(/^\s*(\d+)\s*:\s?(.*)$/);
+        // Accept a new item only if the number continues the 1,1,2,2,... run,
+        // so a stray "1900:" mid-prose isn't mistaken for an item start.
+        if (m && (last < 0 || parseInt(m[1], 10) === last || parseInt(m[1], 10) === last + 1)) {
+          if (cur) blocks.push(cur);
+          var num = parseInt(m[1], 10);
+          cur = { num: num, lines: [m[2]] };
+          if (num > last) last = num;
+        } else if (cur) {
+          cur.lines.push(lines[j]);
+        }
+      }
+      if (cur) blocks.push(cur);
+
+      return blocks.map(function (b) {
+        return /\[\s*\d+\s*[a-z]?\s*\]/i.test(b.lines.join("\n")) ? parseBonus(b) : parseTossup(b);
+      });
+    }
+
+    function loadPacket() {
+      var raw = document.getElementById("packet").value;
+      QUESTIONS = parsePacket(raw);
+      try { localStorage.setItem("packet", raw); } catch (e) {}
+      var tu = QUESTIONS.filter(function (q) { return q.type === "tossup"; }).length;
+      document.getElementById("loadinfo").textContent =
+        "Loaded " + QUESTIONS.length + " items (" + tu + " tossups, " + (QUESTIONS.length - tu) + " bonuses).";
+      navTo(0); // reset the device's index to the start
+      renderQuestion();
+    }
+
+    function renderQuestion() {
+      var el = document.getElementById("question");
+      if (!QUESTIONS.length) { el.innerHTML = "<em>No packet loaded.</em>"; return; }
+      if (curQ < 0 || curQ >= QUESTIONS.length) {
+        el.innerHTML = "<div class=\"qhead\">Item " + (curQ + 1) + " / " + QUESTIONS.length + "</div><em>End of packet.</em>";
+        return;
+      }
+      var q = QUESTIONS[curQ];
+      var html = "<div class=\"qhead\">#" + q.num + " &middot; " + q.type
+               + " &middot; item " + (curQ + 1) + " / " + QUESTIONS.length + "</div>";
+      if (q.type === "tossup") {
+        html += "<div>" + esc(q.text) + "</div>";
+        html += "<div class=\"ans\">ANSWER: " + esc(q.answer) + "</div>";
+      } else {
+        html += "<div>" + esc(q.leadin) + "</div>";
+        for (var i = 0; i < q.parts.length; i++) {
+          var p = q.parts[i];
+          html += "<div class=\"bpart\"><b>[" + p.value + p.diff + "]</b> " + esc(p.text)
+                + "<div class=\"ans\">ANSWER: " + esc(p.answer) + "</div></div>";
+        }
+      }
+      el.innerHTML = html;
+    }
 
     // Build a panel per team with a row per player.
     var teams = document.getElementById("teams");
     for (var t = 0; t < TEAMS; t++) {
       var panel = document.createElement("div");
       panel.className = "team";
-      var html = "<h2>Team " + t + "</h2>"
-               + "<div class=\"total\" id=\"t" + t + "\">0</div>";
+      var ph = "<h2>Team " + t + "</h2><div class=\"total\" id=\"t" + t + "\">0</div>";
       for (var p = 1; p <= PLAYERS; p++) {
-        html += "<div class=\"player\" id=\"p" + t + "_" + p + "\">"
-              + "<span>Player " + p + "</span>"
-              + "<span id=\"ps" + t + "_" + p + "\">0</span></div>";
+        ph += "<div class=\"player\" id=\"p" + t + "_" + p + "\">"
+            + "<span>Player " + p + "</span><span id=\"ps" + t + "_" + p + "\">0</span></div>";
       }
-      panel.innerHTML = html;
+      panel.innerHTML = ph;
       teams.appendChild(panel);
     }
 
@@ -124,10 +239,7 @@
       var d = JSON.parse(ev.data);
       document.getElementById("status").textContent = d.status;
 
-      // Only allow scoring while a buzz is latched in.
-      for (var b = 0; b < scoreButtons.length; b++) {
-        scoreButtons[b].disabled = !d.active;
-      }
+      for (var b = 0; b < scoreButtons.length; b++) scoreButtons[b].disabled = !d.active;
 
       for (var t = 0; t < d.teams.length; t++) {
         document.getElementById("t" + t).textContent = d.teams[t];
@@ -136,13 +248,23 @@
           var ps = document.getElementById("ps" + t + "_" + pid);
           if (ps) ps.textContent = d.players[t][p];
           var row = document.getElementById("p" + t + "_" + pid);
-          if (row) {
-            row.classList.toggle("buzzed",
-              d.active && d.wteam === t && d.wplayer === pid);
-          }
+          if (row) row.classList.toggle("buzzed", d.active && d.wteam === t && d.wplayer === pid);
         }
       }
+
+      // Device owns the question index; show whatever it points at.
+      if (typeof d.q === "number" && d.q !== curQ) { curQ = d.q; renderQuestion(); }
     };
+
+    // Restore a previously pasted packet so a refresh keeps it.
+    try {
+      var saved = localStorage.getItem("packet");
+      if (saved) {
+        document.getElementById("packet").value = saved;
+        QUESTIONS = parsePacket(saved);
+        renderQuestion();
+      }
+    } catch (e) {}
   </script>
 </body>
 </html>
