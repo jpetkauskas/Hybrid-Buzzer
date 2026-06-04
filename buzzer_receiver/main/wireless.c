@@ -1,6 +1,7 @@
 #include "wireless.h"
 #include "buzz.h"
 #include "config.h"
+#include "webserver.h"
 #include "driver/gpio.h"
 #include "esp_now.h"
 #include "freertos/idf_additions.h"
@@ -81,6 +82,8 @@ void receiver_hardware_init(void)
   esp_wifi_set_mode(WIFI_MODE_STA);
   esp_wifi_start();
   esp_now_init();
+
+  start_webserver(); //boots Hello World web server immediately, independent of ESPNOW pairing
 }
 
 void receiver_init_wireless(void) 
