@@ -6,4 +6,3 @@ sdkconfig.old
 .cache/
 *.pyc
 __pycache__/
-Pictures/*
