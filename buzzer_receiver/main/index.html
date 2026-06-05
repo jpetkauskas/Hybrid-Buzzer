@@ -52,6 +52,8 @@
     .bar button { font-size: 1.2rem; padding: 0.6rem 1rem; margin: 0.25rem; }
     .teams { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; margin-top: 1.2rem; }
     .team { flex: 1 1 18rem; max-width: 24rem; padding: 1rem; border: 3px solid #ccc; border-radius: 1rem; }
+    .team.negged { opacity: 0.5; border-color: #ff8a8a; }
+    .team.negged h2, .team.negged .total { text-decoration: line-through; }
     .team h2 { font-size: 2rem; margin: 0; }
     .total { font-size: 4rem; font-weight: bold; line-height: 1; margin: 0.3rem 0 0.8rem; }
     .player { display: flex; justify-content: space-between; font-size: 1.5rem; padding: 0.4rem 0.6rem; border-radius: 0.5rem; }
@@ -82,6 +84,7 @@
     <button onclick="nav(1)">Next &#9654;</button>
     <button onclick="navTo(0)">Restart packet</button>
     <button onclick="resetScores()">Reset scores</button>
+    <button onclick="exportStats()">Export CSV</button>
   </div>
 
   <div id="teams" class="teams"></div>
@@ -91,6 +94,7 @@
     <p>Paste a full packet below, then press <b>Load packet</b>. Questions advance on each clear/score; use Prev/Next to skip.</p>
     <textarea id="packet" rows="10" placeholder="Paste full packet here..."></textarea>
     <button onclick="loadPacket()">Load packet</button>
+    <button onclick="clearPacket()">Clear packet</button>
     <div id="loadinfo"></div>
   </details>
 
@@ -105,82 +109,108 @@
     function resetScores() { fetch("resetscores", { method: "POST" }); }
     function nav(d) { fetch("nav?d=" + d, { method: "POST" }); }
     function navTo(n) { fetch("nav?to=" + n, { method: "POST" }); }
+    // Device serves the CSV with an attachment header, so this downloads it.
+    function exportStats() { window.location.href = "stats.csv"; }
 
     function esc(s) {
       return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
     /* ---- Packet parsing ----
-       Items start with "N:" (the number repeats: tossup then bonus). A bonus
-       contains bracketed part markers like [10h]; a tossup does not. Text and
-       even ANSWER lines wrap across hard line breaks, so each segment runs
-       until the next marker. The trailing "<...>" metadata line is dropped. */
-    function isAnswer(ln) { return /^\s*ANSWER\s*:/i.test(ln); }
-    function isPart(ln) { return /^\s*\[\s*\d+\s*[a-z]?\s*\]/i.test(ln); }
-    function isMeta(ln) { return /^\s*</.test(ln); }
-    function stripAnswer(ln) { return ln.replace(/^\s*ANSWER\s*:/i, "").trim(); }
+       Anchored on ANSWER lines and bonus part markers, NOT on item numbers
+       (numbering varies by source — "1." "1)" "1:" "TU1" — and bare numbers
+       collide with numbers in prose). Structural invariants that hold across
+       packets: a tossup is clue text + one ANSWER; a bonus is a lead-in plus
+       consecutive parts, each marked ([10], [10h], [E], (10)...) with its own
+       ANSWER. Works whether the paste is hard-wrapped (PDF) or one line per
+       question (HTML), since segments are delimited by markers, not newlines. */
 
-    function parseTossup(b) {
-      var q = [], ans = [], inAns = false;
-      for (var i = 0; i < b.lines.length; i++) {
-        var ln = b.lines[i];
-        if (isMeta(ln)) break;
-        if (isAnswer(ln)) { inAns = true; ans.push(stripAnswer(ln)); continue; }
-        if (inAns) ans.push(ln.trim()); else q.push(ln.trim());
-      }
-      return { num: b.num, type: "tossup", text: q.join(" ").trim(), answer: ans.join(" ").trim() };
+    // ANSWER: / Answer. / ANS: / A:  (answer line, identical form in TU & bonus)
+    function isAnswer(ln) { return /^\s*(answers?|ans|a)\s*[:.]/i.test(ln); }
+    function stripAnswer(ln) { return ln.replace(/^\s*(answers?|ans|a)\s*[:.]/i, "").trim(); }
+    // Category/editor metadata line, e.g. <OM, Physics> or {Literature}.
+    function isMeta(ln) { return /^\s*[<{]/.test(ln); }
+    function isBlank(ln) { return /^\s*$/.test(ln); }
+    // Item-number prefix: "1." "1)" "12:" "TU3." "Bonus 4." — captures the rest.
+    function numStart(ln) {
+      var m = ln.match(/^\s*(?:tossup|toss-up|bonus|tu|b)?\s*(\d{1,2})\s*[.):]\s*(.*)$/i);
+      return m ? { num: parseInt(m[1], 10), rest: m[2] } : null;
     }
-
-    function parseBonus(b) {
-      var leadin = [], parts = [], cur = null, inLeadin = true;
-      for (var i = 0; i < b.lines.length; i++) {
-        var ln = b.lines[i];
-        if (isMeta(ln)) break;
-        var pm = ln.match(/^\s*\[\s*(\d+)\s*([a-z]?)\s*\]\s*(.*)$/i);
-        if (pm) {
-          if (cur) parts.push(cur);
-          cur = { value: parseInt(pm[1], 10), diff: pm[2].toLowerCase(), text: [pm[3]], answer: [], inAns: false };
-          inLeadin = false;
-          continue;
-        }
-        if (isAnswer(ln)) { if (cur) { cur.inAns = true; cur.answer.push(stripAnswer(ln)); } continue; }
-        if (inLeadin) leadin.push(ln.trim());
-        else if (cur) { (cur.inAns ? cur.answer : cur.text).push(ln.trim()); }
-      }
-      if (cur) parts.push(cur);
+    // Bonus part marker anywhere in a string: [10] [10h] [H] (10) (10m).
+    // Requires a digit or a difficulty letter so prose like "[read slowly]"
+    // or "(*)" never matches. Returns {idx, value, diff, rest} or null.
+    var PART_RE = /[\[(]\s*(\d{1,2})?\s*([ehmEHM]?)\s*[\])]/;
+    function findPart(text) {
+      var m = text.match(PART_RE);
+      if (!m || (!m[1] && !m[2])) return null;
       return {
-        num: b.num, type: "bonus", leadin: leadin.join(" ").trim(),
-        parts: parts.map(function (p) {
-          return { value: p.value, diff: p.diff, text: p.text.join(" ").trim(), answer: p.answer.join(" ").trim() };
-        })
+        idx: m.index, value: m[1] ? parseInt(m[1], 10) : null,
+        diff: (m[2] || "").toLowerCase(),
+        rest: text.slice(m.index + m[0].length).trim()
       };
     }
+    function startsWithPart(text) {
+      var p = findPart(text);
+      return p && p.idx <= 2 ? p : null; // marker leads the segment (allow stray space)
+    }
+    function stripNum(t) { var n = numStart(t); return n ? n.rest : t.trim(); }
 
     function parsePacket(raw) {
       var lines = raw.split(/\r?\n/);
+
+      // Skip the header: start at a "PACKET" line, else the first item-looking line.
       var start = 0;
       for (var i = 0; i < lines.length; i++) {
         if (/^\s*packet\b/i.test(lines[i])) { start = i + 1; break; }
+        if (numStart(lines[i]) || startsWithPart(lines[i])) { start = i; break; }
       }
-      var blocks = [], cur = null, last = -1;
+
+      // Build segments, each = clue/leadin text terminated by an ANSWER.
+      var segs = [], buf = [], ans = [], mode = "clue"; // clue | ans | idle
+      function flush() {
+        if (buf.length || ans.length) segs.push({ text: buf.join(" ").trim(), answer: ans.join(" ").trim() });
+        buf = []; ans = []; mode = "clue";
+      }
       for (var j = start; j < lines.length; j++) {
-        var m = lines[j].match(/^\s*(\d+)\s*:\s?(.*)$/);
-        // Accept a new item only if the number continues the 1,1,2,2,... run,
-        // so a stray "1900:" mid-prose isn't mistaken for an item start.
-        if (m && (last < 0 || parseInt(m[1], 10) === last || parseInt(m[1], 10) === last + 1)) {
-          if (cur) blocks.push(cur);
-          var num = parseInt(m[1], 10);
-          cur = { num: num, lines: [m[2]] };
-          if (num > last) last = num;
-        } else if (cur) {
-          cur.lines.push(lines[j]);
+        var ln = lines[j];
+        if (isMeta(ln) || isBlank(ln)) { if (mode === "ans") mode = "idle"; continue; }
+        if (isAnswer(ln)) { mode = "ans"; ans.push(stripAnswer(ln)); continue; }
+        // Once an answer is seen, a number/part marker begins the next segment.
+        if (mode !== "clue" && (numStart(ln) || startsWithPart(ln))) {
+          flush(); buf.push(ln.trim()); continue;
+        }
+        if (mode === "ans") ans.push(ln.trim());            // wrapped answer line
+        else { buf.push(ln.trim()); mode = "clue"; }        // clue / leadin / part text
+      }
+      flush();
+
+      // Group segments. A segment is a bonus opener only if it has a part
+      // marker AND looks structurally like a bonus (a following part segment,
+      // or an explicit "for 10 points each", or it simply begins with a part
+      // marker). That invariant rejects a stray "(10)" sitting in a tossup clue.
+      function opensBonus(k, part) {
+        if (k + 1 < segs.length && startsWithPart(segs[k + 1].text)) return true;
+        if (/for\s+(10|ten)\s+points\s+each/i.test(segs[k].text)) return true;
+        return part.idx <= 2;
+      }
+
+      var items = [];
+      for (var k = 0; k < segs.length;) {
+        var part = findPart(segs[k].text);
+        if (part && opensBonus(k, part)) {
+          var leadin = stripNum(segs[k].text.slice(0, part.idx)).trim();
+          var parts = [{ value: part.value, diff: part.diff, text: part.rest, answer: segs[k].answer }];
+          k++;
+          for (var sp; k < segs.length && (sp = startsWithPart(segs[k].text)); k++) {
+            parts.push({ value: sp.value, diff: sp.diff, text: sp.rest, answer: segs[k].answer });
+          }
+          items.push({ type: "bonus", leadin: leadin, parts: parts });
+        } else {
+          items.push({ type: "tossup", text: stripNum(segs[k].text), answer: segs[k].answer });
+          k++;
         }
       }
-      if (cur) blocks.push(cur);
-
-      return blocks.map(function (b) {
-        return /\[\s*\d+\s*[a-z]?\s*\]/i.test(b.lines.join("\n")) ? parseBonus(b) : parseTossup(b);
-      });
+      return items;
     }
 
     function loadPacket() {
@@ -190,8 +220,25 @@
       var tu = QUESTIONS.filter(function (q) { return q.type === "tossup"; }).length;
       document.getElementById("loadinfo").textContent =
         "Loaded " + QUESTIONS.length + " items (" + tu + " tossups, " + (QUESTIONS.length - tu) + " bonuses).";
-      navTo(0); // reset the device's index to the start
+      // Reset to the start and tell the device how many questions exist (so it
+      // clamps the index to the last one).
+      fetch("nav?to=0&count=" + QUESTIONS.length, { method: "POST" });
       renderQuestion();
+    }
+
+    // Wipe the packet from the page (textarea, parsed questions, saved copy).
+    function clearLoadedPacket() {
+      QUESTIONS = [];
+      document.getElementById("packet").value = "";
+      document.getElementById("loadinfo").textContent = "";
+      try { localStorage.removeItem("packet"); } catch (e) {}
+      renderQuestion();
+    }
+
+    // Clear packet button: also tell the device there are no questions.
+    function clearPacket() {
+      clearLoadedPacket();
+      fetch("nav?to=0&count=0", { method: "POST" });
     }
 
     function renderQuestion() {
@@ -202,7 +249,7 @@
         return;
       }
       var q = QUESTIONS[curQ];
-      var html = "<div class=\"qhead\">#" + q.num + " &middot; " + q.type
+      var html = "<div class=\"qhead\">" + q.type
                + " &middot; item " + (curQ + 1) + " / " + QUESTIONS.length + "</div>";
       if (q.type === "tossup") {
         html += "<div>" + esc(q.text) + "</div>";
@@ -211,7 +258,8 @@
         html += "<div>" + esc(q.leadin) + "</div>";
         for (var i = 0; i < q.parts.length; i++) {
           var p = q.parts[i];
-          html += "<div class=\"bpart\"><b>[" + p.value + p.diff + "]</b> " + esc(p.text)
+          var label = "[" + (p.value != null ? p.value : "") + p.diff + "]";
+          html += "<div class=\"bpart\"><b>" + label + "</b> " + esc(p.text)
                 + "<div class=\"ans\">ANSWER: " + esc(p.answer) + "</div></div>";
         }
       }
@@ -223,6 +271,7 @@
     for (var t = 0; t < TEAMS; t++) {
       var panel = document.createElement("div");
       panel.className = "team";
+      panel.id = "team" + t;
       var ph = "<h2>Team " + t + "</h2><div class=\"total\" id=\"t" + t + "\">0</div>";
       for (var p = 1; p <= PLAYERS; p++) {
         ph += "<div class=\"player\" id=\"p" + t + "_" + p + "\">"
@@ -237,6 +286,17 @@
     var es = new EventSource("events");
     es.onmessage = function (ev) {
       var d = JSON.parse(ev.data);
+
+      // The device picks a new session id each boot. If it changed since we
+      // last saw it, the system was power-cycled, so discard the cached packet.
+      if (typeof d.sid !== "undefined") {
+        try {
+          var seen = localStorage.getItem("sid");
+          if (seen !== null && seen !== String(d.sid)) clearLoadedPacket();
+          localStorage.setItem("sid", String(d.sid));
+        } catch (e) {}
+      }
+
       document.getElementById("status").textContent = d.status;
 
       for (var b = 0; b < scoreButtons.length; b++) scoreButtons[b].disabled = !d.active;
@@ -250,13 +310,18 @@
           var row = document.getElementById("p" + t + "_" + pid);
           if (row) row.classList.toggle("buzzed", d.active && d.wteam === t && d.wplayer === pid);
         }
+        // A team that negged the current question is struck through until it advances.
+        var panel = document.getElementById("team" + t);
+        if (panel && d.negged) panel.classList.toggle("negged", !!d.negged[t]);
       }
 
       // Device owns the question index; show whatever it points at.
       if (typeof d.q === "number" && d.q !== curQ) { curQ = d.q; renderQuestion(); }
     };
 
-    // Restore a previously pasted packet so a refresh keeps it.
+    // Restore a previously pasted packet so a page refresh keeps it. The device
+    // retains its question count across refreshes; if it has actually rebooted,
+    // the session-id check above clears this packet on the first event.
     try {
       var saved = localStorage.getItem("packet");
       if (saved) {

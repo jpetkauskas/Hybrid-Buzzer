@@ -4,6 +4,7 @@
 #include "esp_attr.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -34,10 +35,15 @@ void IRAM_ATTR clear_buzz(void);
 static volatile int winner_team = -1;
 static volatile int winner_player = -1;
 
-/* Per-player scores, indexed [team][player-1]. Adjusted only from the httpd
-   task (score/reset handlers), so they need no lock. A team's total is the
-   sum of its players. */
+/* Per-player match stats, indexed [team][player-1]. Adjusted only from the
+   httpd task (score/reset handlers), so they need no lock. A team's total is
+   the sum of its players' points. Exported as CSV via /stats.csv. */
 static int player_scores[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};
+static int player_powers[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}}; /* awards >= 15 */
+static int player_tens[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};   /* awards 1..14 */
+static int player_negs[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};   /* negative awards */
+
+#define POWER_POINTS 15 /* an award this large or more counts as a power */
 
 /* Index of the current packet question. Advanced on each clear/score cycle and
    broadcast to clients, which hold the parsed packet and render questions[q].
@@ -45,9 +51,26 @@ static int player_scores[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};
    path), so it needs no lock. */
 static int question_index = 0;
 
+/* Number of questions in the loaded packet, reported by the page so the index
+   can be clamped to the last question. 0 = unknown (no packet loaded yet). */
+static int question_count = 0;
+
 /* Set by the CLEAR ISR so the httpd-task broadcast advances the question index,
    keeping all index writes on one task. */
 static volatile bool clear_pending_from_isr = false;
+
+/* Teams that have negged the current question (shown struck through on the
+   page). Marked in the score handler; cleared automatically when the question
+   advances — see broadcast_work. */
+static bool team_negged[NUM_TEAMS] = {false};
+
+/* The last index broadcast; when it changes the question has advanced, which
+   resets the per-question neg flags. */
+static int last_broadcast_index = -1;
+
+/* Random per-boot id sent to clients. When the page sees it change, it knows
+   the device power-cycled and discards any packet it had cached. */
+static uint32_t session_id = 0;
 
 static httpd_handle_t server = NULL;
 
@@ -86,9 +109,9 @@ static void format_state_json(char *buf, size_t len)
   if (n < (int)len)
   {
     n += snprintf(buf + n, len - n,
-                  "{\"status\":\"%s\",\"active\":%s,\"wteam\":%d,\"wplayer\":%d,\"q\":%d,\"teams\":[",
+                  "{\"status\":\"%s\",\"active\":%s,\"wteam\":%d,\"wplayer\":%d,\"q\":%d,\"sid\":%u,\"teams\":[",
                   status, latch_state ? "true" : "false", winner_team, winner_player,
-                  question_index);
+                  question_index, (unsigned)session_id);
   }
 
   for (int t = 0; t < NUM_TEAMS && n < (int)len; t++)
@@ -121,6 +144,14 @@ static void format_state_json(char *buf, size_t len)
 
   if (n < (int)len)
   {
+    n += snprintf(buf + n, len - n, "],\"negged\":[");
+  }
+  for (int t = 0; t < NUM_TEAMS && n < (int)len; t++)
+  {
+    n += snprintf(buf + n, len - n, "%s%s", t ? "," : "", team_negged[t] ? "true" : "false");
+  }
+  if (n < (int)len)
+  {
     snprintf(buf + n, len - n, "]}");
   }
 }
@@ -145,6 +176,27 @@ static void broadcast_work(void *arg)
   {
     clear_pending_from_isr = false;
     question_index++;
+  }
+
+  /* Keep the index within the packet: never past the last question, never < 0.
+     Done here so every path (clear, score, nav, physical button) is bounded. */
+  if (question_count > 0 && question_index > question_count - 1)
+  {
+    question_index = question_count - 1;
+  }
+  if (question_index < 0)
+  {
+    question_index = 0;
+  }
+
+  /* A new question clears the per-question neg flags. */
+  if (question_index != last_broadcast_index)
+  {
+    last_broadcast_index = question_index;
+    for (int t = 0; t < NUM_TEAMS; t++)
+    {
+      team_negged[t] = false;
+    }
   }
 
   char payload[256];
@@ -284,11 +336,28 @@ static esp_err_t score_post_handler(httpd_req_t *req)
   if (latch_state && winner_team >= 0 && winner_team < NUM_TEAMS &&
       winner_player >= 1 && winner_player <= PLAYERS_PER_TEAM)
   {
-    player_scores[winner_team][winner_player - 1] += delta;
+    int wp = winner_player - 1;
+    player_scores[winner_team][wp] += delta;
+    if (delta < 0)
+    {
+      player_negs[winner_team][wp]++;
+      team_negged[winner_team] = true; /* struck through until the question advances */
+    }
+    else if (delta >= POWER_POINTS)
+    {
+      player_powers[winner_team][wp]++;
+    }
+    else if (delta > 0)
+    {
+      player_tens[winner_team][wp]++;
+    }
   }
 
-  clear_buzz();     /* awarding/penalizing ends the current buzz, like CLEAR */
-  question_index++; /* and advances to the next question */
+  clear_buzz(); /* end this buzz so another team can ring in */
+  if (delta > 0)
+  {
+    question_index++; /* a correct award moves on; a neg stays so others answer */
+  }
   broadcast_work(NULL);
   httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
@@ -302,6 +371,9 @@ static esp_err_t resetscores_post_handler(httpd_req_t *req)
     for (int p = 0; p < PLAYERS_PER_TEAM; p++)
     {
       player_scores[t][p] = 0;
+      player_powers[t][p] = 0;
+      player_tens[t][p] = 0;
+      player_negs[t][p] = 0;
     }
   }
   broadcast_work(NULL);
@@ -319,6 +391,11 @@ static esp_err_t nav_post_handler(httpd_req_t *req)
 
   if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
   {
+    /* count: how many questions the loaded packet has, for clamping. */
+    if (httpd_query_key_value(query, "count", value, sizeof(value)) == ESP_OK)
+    {
+      question_count = atoi(value);
+    }
     if (httpd_query_key_value(query, "to", value, sizeof(value)) == ESP_OK)
     {
       question_index = atoi(value);
@@ -329,13 +406,34 @@ static esp_err_t nav_post_handler(httpd_req_t *req)
     }
   }
 
-  if (question_index < 0)
+  broadcast_work(NULL); /* clamps the index to [0, count - 1] */
+  httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+/* Download per-player match stats as CSV: GET /stats.csv. One row per player
+   with their powers, tens, negs and total points. */
+static esp_err_t stats_csv_handler(httpd_req_t *req)
+{
+  char csv[768];
+  int n = 0;
+  if (n < (int)sizeof(csv))
   {
-    question_index = 0;
+    n += snprintf(csv + n, sizeof(csv) - n, "team,player,powers,tens,negs,points\n");
+  }
+  for (int t = 0; t < NUM_TEAMS && n < (int)sizeof(csv); t++)
+  {
+    for (int p = 0; p < PLAYERS_PER_TEAM && n < (int)sizeof(csv); p++)
+    {
+      n += snprintf(csv + n, sizeof(csv) - n, "%d,%d,%d,%d,%d,%d\n",
+                    t, p + 1, player_powers[t][p], player_tens[t][p],
+                    player_negs[t][p], player_scores[t][p]);
+    }
   }
 
-  broadcast_work(NULL);
-  httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+  httpd_resp_set_type(req, "text/csv");
+  httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"stats.csv\"");
+  httpd_resp_send(req, csv, HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
@@ -390,6 +488,13 @@ static const httpd_uri_t nav_uri = {
     .user_ctx = NULL,
 };
 
+static const httpd_uri_t stats_uri = {
+    .uri = "/stats.csv",
+    .method = HTTP_GET,
+    .handler = stats_csv_handler,
+    .user_ctx = NULL,
+};
+
 /* Registered last so the more specific /events wins; matches everything else. */
 static const httpd_uri_t catch_all_uri = {
     .uri = "/*",
@@ -400,6 +505,8 @@ static const httpd_uri_t catch_all_uri = {
 
 void start_webserver(void)
 {
+  session_id = esp_random(); /* new id each boot; the page clears its packet when it changes */
+
   event_sem = xSemaphoreCreateBinary();
   xTaskCreate(notifier_task, "sse_notifier", 3072, NULL, 5, NULL);
 
@@ -456,6 +563,7 @@ void start_webserver(void)
     httpd_register_uri_handler(server, &score_uri);
     httpd_register_uri_handler(server, &resetscores_uri);
     httpd_register_uri_handler(server, &nav_uri);
+    httpd_register_uri_handler(server, &stats_uri);
     httpd_register_uri_handler(server, &catch_all_uri);
   }
 }

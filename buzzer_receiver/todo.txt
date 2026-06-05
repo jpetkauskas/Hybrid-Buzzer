@@ -1,0 +1,6 @@
+V clear packet button to clear the load packet menu
+v export CSV stats
+- robust Bonus question handling
+- web mode and non-web mode
+- make the player field editable text boxes
+- justinaspetkauskas.com wordmark
