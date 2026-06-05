@@ -37,7 +37,8 @@ static volatile int winner_player = -1;
 
 /* Per-player match stats, indexed [team][player-1]. Adjusted only from the
    httpd task (score/reset handlers), so they need no lock. A team's total is
-   the sum of its players' points. Exported as CSV via /stats.csv. */
+   the sum of its players' points. Served raw via /stats.json; the page adds
+   names and builds the CSV. */
 static int player_scores[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};
 static int player_powers[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}}; /* awards >= 15 */
 static int player_tens[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};   /* awards 1..14 */
@@ -411,29 +412,41 @@ static esp_err_t nav_post_handler(httpd_req_t *req)
   return ESP_OK;
 }
 
-/* Download per-player match stats as CSV: GET /stats.csv. One row per player
-   with their powers, tens, negs and total points. */
-static esp_err_t stats_csv_handler(httpd_req_t *req)
+/* Append one "name":[[team0 players],[team1 players]] matrix to buf. first=1
+   omits the leading comma. Returns the new length. */
+static int append_matrix(char *buf, int n, int len, const char *name,
+                         int m[NUM_TEAMS][PLAYERS_PER_TEAM], int first)
 {
-  char csv[768];
-  int n = 0;
-  if (n < (int)sizeof(csv))
+  if (n < len) n += snprintf(buf + n, len - n, "%s\"%s\":[", first ? "" : ",", name);
+  for (int t = 0; t < NUM_TEAMS && n < len; t++)
   {
-    n += snprintf(csv + n, sizeof(csv) - n, "team,player,powers,tens,negs,points\n");
-  }
-  for (int t = 0; t < NUM_TEAMS && n < (int)sizeof(csv); t++)
-  {
-    for (int p = 0; p < PLAYERS_PER_TEAM && n < (int)sizeof(csv); p++)
+    n += snprintf(buf + n, len - n, "%s[", t ? "," : "");
+    for (int p = 0; p < PLAYERS_PER_TEAM && n < len; p++)
     {
-      n += snprintf(csv + n, sizeof(csv) - n, "%d,%d,%d,%d,%d,%d\n",
-                    t, p + 1, player_powers[t][p], player_tens[t][p],
-                    player_negs[t][p], player_scores[t][p]);
+      n += snprintf(buf + n, len - n, "%s%d", p ? "," : "", m[t][p]);
     }
+    if (n < len) n += snprintf(buf + n, len - n, "]");
   }
+  if (n < len) n += snprintf(buf + n, len - n, "]");
+  return n;
+}
 
-  httpd_resp_set_type(req, "text/csv");
-  httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"stats.csv\"");
-  httpd_resp_send(req, csv, HTTPD_RESP_USE_STRLEN);
+/* Raw per-player match stats as JSON: GET /stats.json. The page owns the
+   team/player names and combines them with these counters to build and
+   download the CSV, so no string/CSV formatting is needed on the device. */
+static esp_err_t stats_json_handler(httpd_req_t *req)
+{
+  char buf[512];
+  int len = sizeof(buf), n = 0;
+  if (n < len) n += snprintf(buf + n, len - n, "{");
+  n = append_matrix(buf, n, len, "powers", player_powers, 1);
+  n = append_matrix(buf, n, len, "tens", player_tens, 0);
+  n = append_matrix(buf, n, len, "negs", player_negs, 0);
+  n = append_matrix(buf, n, len, "points", player_scores, 0);
+  if (n < len) snprintf(buf + n, len - n, "}");
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
@@ -489,9 +502,9 @@ static const httpd_uri_t nav_uri = {
 };
 
 static const httpd_uri_t stats_uri = {
-    .uri = "/stats.csv",
+    .uri = "/stats.json",
     .method = HTTP_GET,
-    .handler = stats_csv_handler,
+    .handler = stats_json_handler,
     .user_ctx = NULL,
 };
 
