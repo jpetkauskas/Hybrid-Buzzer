@@ -4,7 +4,9 @@
 #include "esp_attr.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -45,6 +47,62 @@ static int player_tens[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};   /* awards 1..14 *
 static int player_negs[NUM_TEAMS][PLAYERS_PER_TEAM] = {{0}};   /* negative awards */
 
 #define POWER_POINTS 15 /* an award this large or more counts as a power */
+#define BONUS_POINTS 10 /* each correct bonus part is worth ten */
+#define BONUS_MAX_PARTS 4 /* bonuses are 3 parts; a little slack for odd packets */
+
+/* Team-level bonus points. Bonuses are answered by the whole team, so they are
+   tracked per team and added into the team's total alongside player points. */
+static int team_bonus[NUM_TEAMS] = {0};
+
+/* The team a bonus is reserved for: set to the tossup winner's team when a
+   tossup is converted, and held (along with the buzzer lockout) through the
+   bonus until the question is cleared. -1 = not reserved. */
+static int locked_team = -1;
+
+/* Progress through the current bonus: bonus_part is the part being read (0-based);
+   bonus_result[i] is 0 = pending, 1 = scored (+10), 2 = missed. Both reset when a
+   bonus is entered or left. */
+static int bonus_part = 0;
+static int bonus_result[BONUS_MAX_PARTS] = {0};
+
+static void reset_bonus(void)
+{
+  bonus_part = 0;
+  for (int i = 0; i < BONUS_MAX_PARTS; i++)
+  {
+    bonus_result[i] = 0;
+  }
+}
+
+/* Play-by-play log: one entry per scoring action, in order. The page turns the
+   queue index into a question label and the codes into readable results for the
+   CSV. code: 1=power, 2=get(10), 3=neg, 4=bonus part got, 5=bonus part missed.
+   For bonus events `who` holds the part number (1-based); for tossups it holds
+   the player (1-based). */
+#define MAX_EVENTS 300
+struct game_event
+{
+  uint16_t q;   /* queue index of the question */
+  int8_t team;  /* 0-based team */
+  int8_t who;   /* tossup: player (1-based); bonus: part (1-based) */
+  int8_t code;  /* 1..5, see above */
+  int16_t pts;  /* points awarded */
+};
+static struct game_event events[MAX_EVENTS];
+static int event_count = 0;
+
+static void log_event(int q, int team, int who, int code, int pts)
+{
+  if (event_count < MAX_EVENTS)
+  {
+    events[event_count].q = (uint16_t)q;
+    events[event_count].team = (int8_t)team;
+    events[event_count].who = (int8_t)who;
+    events[event_count].code = (int8_t)code;
+    events[event_count].pts = (int16_t)pts;
+    event_count++;
+  }
+}
 
 /* Index of the current packet question. Advanced on each clear/score cycle and
    broadcast to clients, which hold the parsed packet and render questions[q].
@@ -55,6 +113,10 @@ static int question_index = 0;
 /* Number of questions in the loaded packet, reported by the page so the index
    can be clamped to the last question. 0 = unknown (no packet loaded yet). */
 static int question_count = 0;
+
+/* Sticky: set when an advance runs off the end of the packet (match over),
+   cleared by navigating back into the packet. Drives the page's end screen. */
+static bool match_over = false;
 
 /* Set by the CLEAR ISR so the httpd-task broadcast advances the question index,
    keeping all index writes on one task. */
@@ -110,14 +172,14 @@ static void format_state_json(char *buf, size_t len)
   if (n < (int)len)
   {
     n += snprintf(buf + n, len - n,
-                  "{\"status\":\"%s\",\"active\":%s,\"wteam\":%d,\"wplayer\":%d,\"q\":%d,\"sid\":%u,\"teams\":[",
+                  "{\"status\":\"%s\",\"active\":%s,\"wteam\":%d,\"wplayer\":%d,\"q\":%d,\"sid\":%u,\"lock\":%d,\"over\":%s,\"teams\":[",
                   status, latch_state ? "true" : "false", winner_team, winner_player,
-                  question_index, (unsigned)session_id);
+                  question_index, (unsigned)session_id, locked_team, match_over ? "true" : "false");
   }
 
   for (int t = 0; t < NUM_TEAMS && n < (int)len; t++)
   {
-    int total = 0;
+    int total = team_bonus[t];
     for (int p = 0; p < PLAYERS_PER_TEAM; p++)
     {
       total += player_scores[t][p];
@@ -151,6 +213,24 @@ static void format_state_json(char *buf, size_t len)
   {
     n += snprintf(buf + n, len - n, "%s%s", t ? "," : "", team_negged[t] ? "true" : "false");
   }
+
+  if (n < (int)len)
+  {
+    n += snprintf(buf + n, len - n, "],\"bonus\":[");
+  }
+  for (int t = 0; t < NUM_TEAMS && n < (int)len; t++)
+  {
+    n += snprintf(buf + n, len - n, "%s%d", t ? "," : "", team_bonus[t]);
+  }
+
+  if (n < (int)len)
+  {
+    n += snprintf(buf + n, len - n, "],\"part\":%d,\"bres\":[", bonus_part);
+  }
+  for (int i = 0; i < BONUS_MAX_PARTS && n < (int)len; i++)
+  {
+    n += snprintf(buf + n, len - n, "%s%d", i ? "," : "", bonus_result[i]);
+  }
   if (n < (int)len)
   {
     snprintf(buf + n, len - n, "]}");
@@ -161,7 +241,7 @@ static void format_state_json(char *buf, size_t len)
    false if the socket is dead. */
 static bool sse_send(int fd, const char *payload)
 {
-  char event[320];
+  char event[448];
   int n = snprintf(event, sizeof(event), "data: %s\n\n", payload);
   return httpd_socket_send(server, fd, event, n, 0) >= 0;
 }
@@ -177,13 +257,17 @@ static void broadcast_work(void *arg)
   {
     clear_pending_from_isr = false;
     question_index++;
+    locked_team = -1; /* physical clear ends the tossup/bonus pair's reservation */
+    reset_bonus();
   }
 
   /* Keep the index within the packet: never past the last question, never < 0.
-     Done here so every path (clear, score, nav, physical button) is bounded. */
-  if (question_count > 0 && question_index > question_count - 1)
+     Done here so every path (clear, score, nav, physical button) is bounded.
+     Advancing past the last question raises the sticky match-over flag. */
+  if (question_count > 0 && question_index >= question_count)
   {
     question_index = question_count - 1;
+    match_over = true;
   }
   if (question_index < 0)
   {
@@ -200,7 +284,7 @@ static void broadcast_work(void *arg)
     }
   }
 
-  char payload[256];
+  char payload[384];
   format_state_json(payload, sizeof(payload));
 
   for (int i = 0; i < client_count;)
@@ -299,7 +383,7 @@ static esp_err_t events_get_handler(httpd_req_t *req)
     client_fds[client_count++] = fd;
   }
 
-  char payload[256];
+  char payload[384];
   format_state_json(payload, sizeof(payload));
   sse_send(fd, payload);
 
@@ -312,16 +396,19 @@ static esp_err_t events_get_handler(httpd_req_t *req)
 static esp_err_t clear_post_handler(httpd_req_t *req)
 {
   clear_buzz();
+  locked_team = -1; /* end any tossup/bonus reservation */
+  reset_bonus();
   question_index++; /* each clear/arm cycle advances to the next question */
   broadcast_work(NULL);
   httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
-/* Award points to the player who buzzed: POST /score?delta=<d>. The points go
-   to the current buzz winner (team/player), so only a latched-in buzz can
-   score — mirroring real play, where you award whoever rang in. Runs in the
-   httpd task, so it updates state and broadcasts directly. */
+/* Score a TOSSUP for the player who buzzed: POST /score?delta=<d>. Only a
+   latched-in buzz can score. A positive award reserves the upcoming bonus for
+   that team and HOLDS the buzzer lockout through the bonus; a neg just deducts
+   and re-arms so another team can ring in on the same tossup. Bonuses are
+   scored separately via /bonus. Runs in the httpd task. */
 static esp_err_t score_post_handler(httpd_req_t *req)
 {
   char query[32];
@@ -334,30 +421,82 @@ static esp_err_t score_post_handler(httpd_req_t *req)
     delta = atoi(value);
   }
 
-  if (latch_state && winner_team >= 0 && winner_team < NUM_TEAMS &&
-      winner_player >= 1 && winner_player <= PLAYERS_PER_TEAM)
+  bool scored = latch_state && winner_team >= 0 && winner_team < NUM_TEAMS &&
+                winner_player >= 1 && winner_player <= PLAYERS_PER_TEAM;
+  if (scored)
   {
     int wp = winner_player - 1;
     player_scores[winner_team][wp] += delta;
+    int code = 0;
     if (delta < 0)
     {
       player_negs[winner_team][wp]++;
       team_negged[winner_team] = true; /* struck through until the question advances */
+      code = 3; /* neg */
     }
     else if (delta >= POWER_POINTS)
     {
       player_powers[winner_team][wp]++;
+      code = 1; /* power */
     }
     else if (delta > 0)
     {
       player_tens[winner_team][wp]++;
+      code = 2; /* get */
+    }
+    if (code) /* log against the tossup's index, before any advance below */
+    {
+      log_event(question_index, winner_team, winner_player, code, delta);
     }
   }
 
-  clear_buzz(); /* end this buzz so another team can ring in */
   if (delta > 0)
   {
-    question_index++; /* a correct award moves on; a neg stays so others answer */
+    /* Tossup converted: reserve the bonus for this team and keep the buzzer
+       locked out (no clear_buzz) so nobody can ring in during the bonus. */
+    if (scored)
+    {
+      locked_team = winner_team;
+    }
+    reset_bonus();    /* start the bonus at part 1 */
+    question_index++; /* advance to the bonus */
+  }
+  else
+  {
+    clear_buzz(); /* neg / no award: re-arm so another team can ring in */
+  }
+
+  broadcast_work(NULL);
+  httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+/* Award one bonus part (+10) to the reserved team: POST /bonus. Marks the part
+   scored and advances the part pointer. No buzz involved; the index does not
+   advance (the reader clicks Clear to move on after the last part). */
+static esp_err_t bonus_post_handler(httpd_req_t *req)
+{
+  if (locked_team >= 0 && locked_team < NUM_TEAMS && bonus_part < BONUS_MAX_PARTS)
+  {
+    team_bonus[locked_team] += BONUS_POINTS;
+    bonus_result[bonus_part] = 1; /* scored */
+    log_event(question_index, locked_team, bonus_part + 1, 4, BONUS_POINTS);
+    bonus_part++;
+  }
+  broadcast_work(NULL);
+  httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+/* Advance to the next bonus part without awarding points: POST /bonusmiss.
+   For a part the team got wrong, so the reader keeps their place. */
+static esp_err_t bonusmiss_post_handler(httpd_req_t *req)
+{
+  if (locked_team >= 0 && bonus_part < BONUS_MAX_PARTS)
+  {
+    bonus_result[bonus_part] = 2; /* missed */
+    log_event(question_index, locked_team, bonus_part + 1, 5, 0);
+    bonus_part++;
   }
   broadcast_work(NULL);
   httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
@@ -369,6 +508,7 @@ static esp_err_t resetscores_post_handler(httpd_req_t *req)
 {
   for (int t = 0; t < NUM_TEAMS; t++)
   {
+    team_bonus[t] = 0;
     for (int p = 0; p < PLAYERS_PER_TEAM; p++)
     {
       player_scores[t][p] = 0;
@@ -377,6 +517,7 @@ static esp_err_t resetscores_post_handler(httpd_req_t *req)
       player_negs[t][p] = 0;
     }
   }
+  event_count = 0; /* new game: clear the play-by-play log */
   broadcast_work(NULL);
   httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
@@ -390,6 +531,7 @@ static esp_err_t nav_post_handler(httpd_req_t *req)
   char query[32];
   char value[12];
 
+  bool navigated = false;
   if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
   {
     /* count: how many questions the loaded packet has, for clamping. */
@@ -400,11 +542,23 @@ static esp_err_t nav_post_handler(httpd_req_t *req)
     if (httpd_query_key_value(query, "to", value, sizeof(value)) == ESP_OK)
     {
       question_index = atoi(value);
+      navigated = true;
     }
     else if (httpd_query_key_value(query, "d", value, sizeof(value)) == ESP_OK)
     {
       question_index += atoi(value);
+      navigated = true;
     }
+  }
+
+  /* Only an actual jump resets play; a count-only sync (page load/refresh)
+     must leave the buzzer and reservation alone. */
+  if (navigated)
+  {
+    clear_buzz();
+    locked_team = -1;
+    reset_bonus();
+    match_over = false; /* moving within the packet exits the end screen */
   }
 
   broadcast_work(NULL); /* clamps the index to [0, count - 1] */
@@ -443,10 +597,107 @@ static esp_err_t stats_json_handler(httpd_req_t *req)
   n = append_matrix(buf, n, len, "tens", player_tens, 0);
   n = append_matrix(buf, n, len, "negs", player_negs, 0);
   n = append_matrix(buf, n, len, "points", player_scores, 0);
+  if (n < len) n += snprintf(buf + n, len - n, ",\"bonus\":[");
+  for (int t = 0; t < NUM_TEAMS && n < len; t++)
+  {
+    n += snprintf(buf + n, len - n, "%s%d", t ? "," : "", team_bonus[t]);
+  }
+  if (n < len) n += snprintf(buf + n, len - n, "]");
   if (n < len) snprintf(buf + n, len - n, "}");
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+/* Play-by-play event log as JSON: GET /log.json. Streamed in chunks so the
+   whole game's events never need one big buffer. The page maps q -> question
+   label and code -> result, adds names, and appends it to the CSV. */
+static esp_err_t log_json_handler(httpd_req_t *req)
+{
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr_chunk(req, "[");
+  char row[80];
+  for (int i = 0; i < event_count; i++)
+  {
+    snprintf(row, sizeof(row), "%s{\"q\":%d,\"team\":%d,\"who\":%d,\"code\":%d,\"pts\":%d}",
+             i ? "," : "", events[i].q, events[i].team, events[i].who, events[i].code, events[i].pts);
+    httpd_resp_sendstr_chunk(req, row);
+  }
+  httpd_resp_sendstr_chunk(req, "]");
+  httpd_resp_sendstr_chunk(req, NULL); /* end response */
+  return ESP_OK;
+}
+
+/* Deferred restart so the HTTP response is flushed before we reboot. */
+static void reboot_task(void *arg)
+{
+  vTaskDelay(pdMS_TO_TICKS(800));
+  esp_restart();
+}
+
+/* Receive a firmware image as the raw POST body and write it to the inactive
+   OTA slot: POST /update. The running slot is never touched, so an aborted or
+   corrupt upload leaves the device on its current firmware. Only after the image
+   passes esp_ota_end()'s validation do we switch the boot partition and reboot;
+   the new image is confirmed (rollback cancelled) once its web server is up. */
+static esp_err_t update_post_handler(httpd_req_t *req)
+{
+  const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
+  if (target == NULL)
+  {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no OTA partition");
+    return ESP_FAIL;
+  }
+
+  esp_ota_handle_t ota = 0;
+  if (esp_ota_begin(target, OTA_SIZE_UNKNOWN, &ota) != ESP_OK)
+  {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+    return ESP_FAIL;
+  }
+
+  char buf[1024];
+  int remaining = req->content_len;
+  int timeouts = 0;
+  bool ok = (remaining > 0);
+  while (remaining > 0)
+  {
+    int chunk = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+    int received = httpd_req_recv(req, buf, chunk);
+    if (received == HTTPD_SOCK_ERR_TIMEOUT)
+    {
+      if (++timeouts > 5) { ok = false; break; } /* client went away */
+      continue;
+    }
+    timeouts = 0;
+    if (received <= 0 || esp_ota_write(ota, buf, received) != ESP_OK)
+    {
+      ok = false;
+      break;
+    }
+    remaining -= received;
+  }
+
+  if (!ok)
+  {
+    esp_ota_abort(ota); /* discard partial image; current firmware untouched */
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "upload failed");
+    return ESP_FAIL;
+  }
+  if (esp_ota_end(ota) != ESP_OK) /* verifies the image is a valid app */
+  {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid firmware image");
+    return ESP_FAIL;
+  }
+  if (esp_ota_set_boot_partition(target) != ESP_OK)
+  {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "set boot failed");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_sendstr(req, "OK");
+  xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
   return ESP_OK;
 }
 
@@ -487,6 +738,20 @@ static const httpd_uri_t score_uri = {
     .user_ctx = NULL,
 };
 
+static const httpd_uri_t bonus_uri = {
+    .uri = "/bonus",
+    .method = HTTP_POST,
+    .handler = bonus_post_handler,
+    .user_ctx = NULL,
+};
+
+static const httpd_uri_t bonusmiss_uri = {
+    .uri = "/bonusmiss",
+    .method = HTTP_POST,
+    .handler = bonusmiss_post_handler,
+    .user_ctx = NULL,
+};
+
 static const httpd_uri_t resetscores_uri = {
     .uri = "/resetscores",
     .method = HTTP_POST,
@@ -505,6 +770,20 @@ static const httpd_uri_t stats_uri = {
     .uri = "/stats.json",
     .method = HTTP_GET,
     .handler = stats_json_handler,
+    .user_ctx = NULL,
+};
+
+static const httpd_uri_t log_uri = {
+    .uri = "/log.json",
+    .method = HTTP_GET,
+    .handler = log_json_handler,
+    .user_ctx = NULL,
+};
+
+static const httpd_uri_t update_uri = {
+    .uri = "/update",
+    .method = HTTP_POST,
+    .handler = update_post_handler,
     .user_ctx = NULL,
 };
 
@@ -569,14 +848,23 @@ void start_webserver(void)
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.close_fn = on_socket_close;
   config.uri_match_fn = httpd_uri_match_wildcard; /* enables the catch-all route */
+  config.max_uri_handlers = 16; /* default 8 is too few for our routes + catch-all */
   if (httpd_start(&server, &config) == ESP_OK)
   {
     httpd_register_uri_handler(server, &events_uri);
     httpd_register_uri_handler(server, &clear_uri);
     httpd_register_uri_handler(server, &score_uri);
+    httpd_register_uri_handler(server, &bonus_uri);
+    httpd_register_uri_handler(server, &bonusmiss_uri);
     httpd_register_uri_handler(server, &resetscores_uri);
     httpd_register_uri_handler(server, &nav_uri);
     httpd_register_uri_handler(server, &stats_uri);
+    httpd_register_uri_handler(server, &log_uri);
+    httpd_register_uri_handler(server, &update_uri);
     httpd_register_uri_handler(server, &catch_all_uri);
+
+    /* The web server (our OTA recovery path) is up, so confirm this image:
+       cancels the rollback that would otherwise revert it on the next boot. */
+    esp_ota_mark_app_valid_cancel_rollback();
   }
 }

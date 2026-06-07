@@ -1,0 +1,10 @@
+# Dual-OTA layout for ESP32-S3 (8 MB flash). Two app slots so a firmware
+# update writes to the inactive slot while the running one stays untouched —
+# a failed/aborted flash never affects the device. Combined with rollback,
+# a complete-but-broken image reverts on the next boot.
+# Name,     Type, SubType, Offset,  Size
+nvs,        data, nvs,     ,        0x6000
+phy_init,   data, phy,     ,        0x1000
+otadata,    data, ota,     ,        0x2000
+ota_0,      app,  ota_0,   ,        0x300000
+ota_1,      app,  ota_1,   ,        0x300000
