@@ -53,7 +53,9 @@
       margin: 0.3rem;
     }
     #scoring button:disabled { opacity: 0.35; cursor: not-allowed; }
-    .bar button { font-size: 1.2rem; padding: 0.6rem 1rem; margin: 0.25rem; }
+    .bar { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4rem; }
+    .bar button { font-size: 1rem; padding: 0.5rem 0.7rem; white-space: nowrap; }
+    .bar button.primary { background: #4a90d9; color: #fff; font-weight: 600; }
     .teams { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; margin-top: 1.2rem; }
     .team { flex: 1 1 18rem; max-width: 24rem; padding: 1rem; border: 3px solid #ccc; border-radius: 1rem; }
     .team.negged { opacity: 0.5; border-color: #ff8a8a; }
@@ -70,7 +72,7 @@
     .std   { background: #8fe18f; }
     .neg   { background: #ff8a8a; }
     .miss  { background: #d7dde3; }
-    #setup { margin-top: 1.5rem; text-align: left; }
+    #setup, #firmware { margin-top: 1rem; text-align: left; }
     #packet { width: 100%; box-sizing: border-box; font-family: monospace; }
     #loadinfo { margin-top: 0.4rem; color: #444; }
     .brand { margin: 2.5rem 0 0.8rem; font-size: 1rem; letter-spacing: 0.02em; color: #888; }
@@ -113,6 +115,8 @@
     <button onclick="navTo(0)">Restart packet</button>
     <button onclick="resetScores()">Reset scores</button>
     <button onclick="exportStats()">Export CSV</button>
+    <button class="primary" onclick="openPanel('setup')">Load packet</button>
+    <button onclick="openPanel('firmware')">Firmware</button>
   </div>
 
   <div id="teams" class="teams"></div>
@@ -181,6 +185,11 @@
     function bonusMiss() { fetch("bonusmiss", { method: "POST" }); } // advance bonus part, no points
     function clr() { fetch("clear", { method: "POST" }); }
     function newMatch() { resetScores(); navTo(0); } // clear scores and go back to the start
+    // Open (and scroll to) a collapsible panel from a toolbar button.
+    function openPanel(id) {
+      var d = document.getElementById(id);
+      if (d) { d.open = true; d.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    }
 
     // Upload a firmware .bin as the raw POST body (XHR for progress).
     function updateFirmware() {
@@ -195,10 +204,10 @@
       };
       xhr.onload = function () {
         st.textContent = (xhr.status === 200)
-          ? "Flashed — device rebooting. Reconnect to the AP and reload in ~10 s."
-          : "Update failed (" + xhr.status + "): " + xhr.responseText + " — still on current firmware.";
+          ? "Flashed, device rebooting. Reconnect to the AP and reload in ~10 s."
+          : "Update failed (" + xhr.status + "): " + xhr.responseText + " , still on current firmware.";
       };
-      xhr.onerror = function () { st.textContent = "Upload error — still on current firmware."; };
+      xhr.onerror = function () { st.textContent = "Upload error, still on current firmware."; };
       st.textContent = "Uploading…";
       xhr.send(f);
     }
@@ -210,11 +219,11 @@
       ranked.sort(function (a, b) { return b.total - a.total; });
       var tie = ranked.length >= 2 && ranked[0].total === ranked[1].total;
       var h = "<h1>Match Over</h1><div class=\"winner\">"
-        + (tie ? "Tie at " + ranked[0].total : teamName(ranked[0].t) + " wins — " + ranked[0].total)
+        + (tie ? "Tie at " + ranked[0].total : teamName(ranked[0].t) + " wins, " + ranked[0].total)
         + "</div>";
       for (var r = 0; r < ranked.length; r++) {
         var t = ranked[r].t;
-        h += "<div class=\"rteam" + (!tie && r === 0 ? " win" : "") + "\"><h2>" + esc(teamName(t)) + " — " + d.teams[t] + "</h2><ul>";
+        h += "<div class=\"rteam" + (!tie && r === 0 ? " win" : "") + "\"><h2>" + esc(teamName(t)) + ", " + d.teams[t] + "</h2><ul>";
         for (var p = 0; p < d.players[t].length; p++) {
           h += "<li>" + esc(playerName(t, p)) + ": " + d.players[t][p] + "</li>";
         }
@@ -537,9 +546,9 @@
 
       // Status: on a reserved bonus, name the team and the part we're on.
       document.getElementById("status").textContent =
-        (onBonus && reserved >= 0) ? ("Bonus — reserved for " + teamName(reserved)
+        (onBonus && reserved >= 0) ? ("Bonus, reserved for " + teamName(reserved)
             + (bonusDone ? " · complete" : " · part " + (part + 1) + " / " + partsLen))
-        : (d.active && d.wteam >= 0) ? (playerName(d.wteam, d.wplayer - 1) + " — " + teamName(d.wteam))
+        : (d.active && d.wteam >= 0) ? (playerName(d.wteam, d.wplayer - 1) + ", " + teamName(d.wteam))
         : "No buzz yet";
 
       // Tossup: power/+10/neg on a live buzz. Bonus: +10 and Miss for the

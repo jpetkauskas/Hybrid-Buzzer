@@ -7,3 +7,4 @@ V justinaspetkauskas.com wordmark
 x robust lockout timing validation
 V category tracking
 v safeguards/decrementor on bonus?
+- password protect wifi network
