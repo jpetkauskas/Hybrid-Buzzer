@@ -26,3 +26,7 @@ extern int64_t last_fire;
 extern QueueHandle_t buzz_queue;
 
 void IRAM_ATTR button_isr(void *arg);
+
+/* Reset the buzz: turn off all LEDs and release the latch. Shared by the
+   physical CLEAR button ISR and the web "Clear" endpoint. */
+void IRAM_ATTR clear_buzz(void);

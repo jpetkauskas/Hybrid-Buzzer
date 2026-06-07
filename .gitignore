@@ -6,6 +6,6 @@ sdkconfig.old
 .cache/
 *.pyc
 __pycache__/
-Pictures/*
+.clangd
 .gitignore
-
+Pictures/

@@ -21,6 +21,7 @@
 #include "button.h"
 #include "buzz.h"
 #include "config.h"
+#include "webserver.h"
 #include "wireless.h"
 
 packet incoming; //incoming espnow data buffer
@@ -52,7 +53,8 @@ void app_main(void)
       buzz_profile *bp = &bn[team];
       xQueueSend(buzz_queue, &bp, 0);
 
-      printf("Team %d, player %d\n", team, player);
+      // printf("Team %d, player %d\n", team, player);
+      webserver_set_winner(team, player); //mirror the buzz winner to the web page
     }
   }
 }

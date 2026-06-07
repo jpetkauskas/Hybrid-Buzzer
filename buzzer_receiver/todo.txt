@@ -1,0 +1,10 @@
+V clear packet button to clear the load packet menu
+v export CSV stats
+V robust Bonus question handling
+x web mode and non-web mode
+V make the player field editable text boxes
+V justinaspetkauskas.com wordmark
+x robust lockout timing validation
+V category tracking
+v safeguards/decrementor on bonus?
+- password protect wifi network
