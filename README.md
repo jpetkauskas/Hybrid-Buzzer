@@ -1,4 +1,5 @@
-**Hybrid Quiz Bowl Buzzers**
+# Hybrid Quiz Bowl Buzzers
+***[Try a demo of the Reader Console here!](https://jpetkauskas.github.io/Hybrid-Buzzer/)***
 
 ![picture](images/IMG_3927.JPEG)
 
