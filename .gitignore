@@ -9,3 +9,4 @@ __pycache__/
 .clangd
 .gitignore
 Pictures/
+buzzer_receiver/test_packets/*

@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Buzzer</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      text-align: center;
+      margin: 0;
+      padding: 1rem;
+      max-width: 60rem;
+      margin: 0 auto;
+    }
+    #status {
+      font-size: 2.4rem;
+      font-weight: bold;
+      margin: 0.5rem 0;
+      min-height: 2.8rem;
+    }
+    #question {
+      text-align: left;
+      border: 2px solid #ccc;
+      border-radius: 0.8rem;
+      padding: 1rem 1.2rem;
+      margin: 1rem 0;
+      font-size: 1.35rem;
+      line-height: 1.5;
+    }
+    .qhead {
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #666;
+      margin-bottom: 0.6rem;
+    }
+    .ans {
+      margin-top: 0.5rem;
+      padding: 0.4rem 0.6rem;
+      background: #eef5ff;
+      border-left: 4px solid #4a90d9;
+      font-weight: bold;
+    }
+    .bpart { margin-top: 0.9rem; padding: 0.5rem 0.7rem; border-radius: 0.4rem; border-left: 6px solid transparent; transition: background 0.15s; }
+    .bpart.done { opacity: 0.5; }
+    .bpart.current { border-left-color: #f5a623; background: #fff3d6; box-shadow: 0 0 0 2px rgba(245,166,35,0.45); font-weight: 500; }
+    .mark.got { color: #2e8b2e; font-weight: bold; }
+    .mark.miss { color: #c0392b; font-weight: bold; }
+    #scoring button {
+      font-size: 1.7rem;
+      padding: 1rem 1.5rem;
+      margin: 0.3rem;
+    }
+    #scoring button:disabled { opacity: 0.35; cursor: not-allowed; }
+    .bar { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4rem; }
+    .bar button { font-size: 1rem; padding: 0.5rem 0.7rem; white-space: nowrap; }
+    .bar button.primary { background: #4a90d9; color: #fff; font-weight: 600; }
+    .teams { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; margin-top: 1.2rem; }
+    .team { flex: 1 1 18rem; max-width: 24rem; padding: 1rem; border: 3px solid #ccc; border-radius: 1rem; }
+    .team.negged { opacity: 0.5; border-color: #ff8a8a; }
+    .team.negged .total { text-decoration: line-through; }
+    .team.reserved { border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,0.35); }
+    .tname { font-size: 1.8rem; font-weight: bold; text-align: center; width: 100%; box-sizing: border-box; border: none; background: transparent; }
+    .total { font-size: 4rem; font-weight: bold; line-height: 1; margin: 0.3rem 0 0.8rem; }
+    .player { display: flex; justify-content: space-between; align-items: center; font-size: 1.5rem; padding: 0.4rem 0.6rem; border-radius: 0.5rem; }
+    .player.buzzed { background: #fff2a8; font-weight: bold; }
+    .pname { font-size: 1.5rem; border: none; background: transparent; flex: 1; min-width: 0; margin-right: 0.5rem; }
+    .tname:focus, .pname:focus { background: #eef; outline: none; }
+    button { border: none; border-radius: 0.7rem; cursor: pointer; }
+    .power { background: #ffd54a; }
+    .std   { background: #8fe18f; }
+    .neg   { background: #ff8a8a; }
+    .miss  { background: #d7dde3; }
+    #setup, #firmware { margin-top: 1rem; text-align: left; }
+    #packet { width: 100%; box-sizing: border-box; font-family: monospace; }
+    #loadinfo { margin-top: 0.4rem; color: #444; }
+    .brand { margin: 2.5rem 0 0.8rem; font-size: 1rem; letter-spacing: 0.02em; color: #888; }
+    .brand .by { font-weight: 600; color: #555; }
+    .brand a { display: inline-block; margin-top: 0.25rem; color: #4a90d9; text-decoration: none; }
+    .brand a:hover { text-decoration: underline; }
+    #matchover {
+      display: none; position: fixed; inset: 0; z-index: 100;
+      background: #fff; overflow: auto; padding: 2rem 1rem; text-align: center;
+    }
+    #matchover h1 { font-size: 3rem; margin: 0.5rem 0; }
+    #matchover .winner { font-size: 2rem; font-weight: bold; color: #2e8b2e; margin-bottom: 1.5rem; }
+    #matchover .rteam { display: inline-block; vertical-align: top; text-align: left; min-width: 16rem; margin: 0.5rem 1rem; padding: 1rem; border: 3px solid #ccc; border-radius: 1rem; }
+    #matchover .rteam.win { border-color: #2e8b2e; }
+    #matchover .rteam h2 { margin: 0 0 0.5rem; }
+    #matchover ul { list-style: none; padding: 0; font-size: 1.3rem; }
+    #matchover .rbonus { color: #555; border-top: 1px solid #ddd; margin-top: 0.4rem; padding-top: 0.4rem; }
+    #matchover .ractions { margin-top: 1.5rem; }
+    #matchover .ractions button { font-size: 1.3rem; padding: 0.7rem 1.2rem; margin: 0.3rem; }
+  </style>
+</head>
+<body>
+  <div id="matchover"></div>
+
+  <div id="status">...</div>
+
+  <div id="question"><em>No packet loaded.</em></div>
+
+  <div id="scoring">
+    <button id="bPower" class="power" onclick="score(15)">Power (+15)</button>
+    <button id="bStd" class="std" onclick="awardStandard()">+10</button>
+    <button id="bMiss" class="miss" onclick="bonusMiss()">Miss (+0)</button>
+    <button id="bNeg" class="neg" onclick="score(-5)">Neg (-5)</button>
+  </div>
+
+  <div class="bar">
+    <button onclick="clr()">Clear</button>
+    <button onclick="nav(-1)">&#9664; Prev</button>
+    <button onclick="nav(1)">Next &#9654;</button>
+    <button onclick="navTo(0)">Restart packet</button>
+    <button onclick="resetScores()">Reset scores</button>
+    <button onclick="exportStats()">Export CSV</button>
+    <button class="primary" onclick="openPanel('setup')">Load packet</button>
+    <button onclick="openPanel('firmware')">Firmware</button>
+  </div>
+
+  <div id="teams" class="teams"></div>
+
+  <details id="setup">
+    <summary>Load packet</summary>
+    <p>Paste a full packet below, then press <b>Load packet</b>. Questions advance on each clear/score; use Prev/Next to skip.</p>
+    <textarea id="packet" rows="10" placeholder="Paste full packet here..."></textarea>
+    <button onclick="loadPacket()">Load packet</button>
+    <button onclick="clearPacket()">Clear packet</button>
+    <div id="loadinfo"></div>
+  </details>
+
+  <details id="firmware">
+    <summary>Firmware update</summary>
+    <p>Select a <code>buzzer_receiver.bin</code> and press <b>Flash firmware</b>. The new
+    image is written to a spare slot and only booted if it's valid, so a bad upload
+    leaves the device on its current firmware. It will reboot when done.</p>
+    <input type="file" id="fw" accept=".bin">
+    <button onclick="updateFirmware()">Flash firmware</button>
+    <div id="fwstatus"></div>
+  </details>
+
+  <footer class="brand">
+    <div class="by">Built by Justinas Petkauskas</div>
+    <a href="https://justinaspetkauskas.com" target="_blank" rel="noopener">justinaspetkauskas.com</a>
+  </footer>
+
+  <script>
+    var TEAMS = 2;
+    var PLAYERS = 4; // player_id is 1-based (1..PLAYERS)
+    var QUESTIONS = [];
+    var curQ = 0;
+    var autoClearTimer = null; // pending auto-advance after a bonus is fully scored
+
+    // Editable team/player names live only in the browser (the device never
+    // needs them) and persist across sessions in localStorage.
+    function defaultNames() {
+      var teams = [], players = [];
+      for (var t = 0; t < TEAMS; t++) {
+        teams.push("Team " + (t + 1));
+        var row = [];
+        for (var p = 1; p <= PLAYERS; p++) row.push("Player " + p);
+        players.push(row);
+      }
+      return { teams: teams, players: players };
+    }
+    var names = defaultNames();
+    try {
+      var sn = JSON.parse(localStorage.getItem("names"));
+      if (sn && sn.teams && sn.players && sn.teams.length === TEAMS && sn.players.length === TEAMS) names = sn;
+    } catch (e) {}
+    function saveNames() { try { localStorage.setItem("names", JSON.stringify(names)); } catch (e) {} }
+    function teamName(t) { return names.teams[t] || ("Team " + (t + 1)); }
+    function playerName(t, p) { return (names.players[t] && names.players[t][p]) || ("Player " + (p + 1)); } // p 0-based
+    function renameTeam(t, v) { names.teams[t] = v; saveNames(); }
+    function renamePlayer(t, p, v) { names.players[t][p] = v; saveNames(); } // p 0-based
+
+    function score(delta) { fetch("score?delta=" + delta, { method: "POST" }); } // tossup power/neg
+    // +10 button: on a bonus it awards the reserved team; on a tossup it's a standard get.
+    function awardStandard() {
+      var q = QUESTIONS[curQ];
+      if (q && q.type === "bonus") fetch("bonus", { method: "POST" });
+      else fetch("score?delta=10", { method: "POST" });
+    }
+    function bonusMiss() { fetch("bonusmiss", { method: "POST" }); } // advance bonus part, no points
+    function clr() { fetch("clear", { method: "POST" }); }
+    function newMatch() { resetScores(); navTo(0); } // clear scores and go back to the start
+    // Open (and scroll to) a collapsible panel from a toolbar button.
+    function openPanel(id) {
+      var d = document.getElementById(id);
+      if (d) { d.open = true; d.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    }
+
+    // Upload a firmware .bin as the raw POST body (XHR for progress).
+    function updateFirmware() {
+      var f = document.getElementById("fw").files[0];
+      var st = document.getElementById("fwstatus");
+      if (!f) { st.textContent = "Choose a .bin file first."; return; }
+      if (!confirm("Flash \"" + f.name + "\" (" + Math.round(f.size / 1024) + " KB)? The device will reboot.")) return;
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "update");
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) st.textContent = "Uploading " + Math.round(e.loaded / e.total * 100) + "%…";
+      };
+      xhr.onload = function () {
+        st.textContent = (xhr.status === 200)
+          ? "Flashed, device rebooting. Reconnect to the AP and reload in ~10 s."
+          : "Update failed (" + xhr.status + "): " + xhr.responseText + " , still on current firmware.";
+      };
+      xhr.onerror = function () { st.textContent = "Upload error, still on current firmware."; };
+      st.textContent = "Uploading…";
+      xhr.send(f);
+    }
+
+    // Final score report shown when the match is over (built from live state).
+    function renderReport(d) {
+      var ranked = [];
+      for (var t = 0; t < d.teams.length; t++) ranked.push({ t: t, total: d.teams[t] });
+      ranked.sort(function (a, b) { return b.total - a.total; });
+      var tie = ranked.length >= 2 && ranked[0].total === ranked[1].total;
+      var h = "<h1>Match Over</h1><div class=\"winner\">"
+        + (tie ? "Tie at " + ranked[0].total : teamName(ranked[0].t) + " wins, " + ranked[0].total)
+        + "</div>";
+      for (var r = 0; r < ranked.length; r++) {
+        var t = ranked[r].t;
+        h += "<div class=\"rteam" + (!tie && r === 0 ? " win" : "") + "\"><h2>" + esc(teamName(t)) + ", " + d.teams[t] + "</h2><ul>";
+        for (var p = 0; p < d.players[t].length; p++) {
+          h += "<li>" + esc(playerName(t, p)) + ": " + d.players[t][p] + "</li>";
+        }
+        h += "<li class=\"rbonus\">Bonuses: " + ((d.bonus && d.bonus[t]) || 0) + "</li></ul></div>";
+      }
+      h += "<div class=\"ractions\">"
+        + "<button onclick=\"exportStats()\">Export CSV</button>"
+        + "<button onclick=\"navTo(QUESTIONS.length - 1)\">Review last question</button>"
+        + "<button onclick=\"newMatch()\">New match</button></div>";
+      document.getElementById("matchover").innerHTML = h;
+    }
+    function resetScores() { fetch("resetscores", { method: "POST" }); }
+    function nav(d) { fetch("nav?d=" + d, { method: "POST" }); }
+    function navTo(n) { fetch("nav?to=" + n, { method: "POST" }); }
+    // Fetch the raw counters and build the CSV here, so names (team + player)
+    // can be included without the device knowing them.
+    function csvCell(v) {
+      v = String(v);
+      return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    }
+    // Map a queue index to a human label ("Tossup 5" / "Bonus 3").
+    function qLabel(i) {
+      if (i < 0 || i >= QUESTIONS.length) return "Q" + (i + 1);
+      var type = QUESTIONS[i].type, n = 0;
+      for (var j = 0; j <= i; j++) if (QUESTIONS[j].type === type) n++;
+      return (type === "tossup" ? "Tossup " : "Bonus ") + n;
+    }
+    function eventResult(code) {
+      return code === 1 ? "Power" : code === 2 ? "Get" : code === 3 ? "Neg"
+        : code === 4 ? "Bonus got" : code === 5 ? "Bonus miss" : "?";
+    }
+    // [questionText, answer] for an event: the tossup clue, or the specific bonus part.
+    function eventText(e) {
+      var item = QUESTIONS[e.q];
+      if (!item) return ["", ""];
+      if (e.code >= 4) {
+        var part = item.parts && item.parts[e.who - 1];
+        return part ? [part.text, part.answer] : [item.leadin || "", ""];
+      }
+      return [item.text || "", item.answer || ""];
+    }
+    function downloadCsv(rows, name) {
+      var csv = rows.map(function (r) { return r.map(csvCell).join(","); }).join("\r\n");
+      var blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" }); // BOM for Excel
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    }
+    function exportStats() {
+      Promise.all([
+        fetch("stats.json").then(function (r) { return r.json(); }),
+        fetch("log.json").then(function (r) { return r.json(); })
+      ]).then(function (res) {
+        var s = res[0], log = res[1];
+        // Per-player summary.
+        var rows = [["Team", "Player", "Powers", "Tens", "Negs", "Points"]];
+        for (var t = 0; t < s.points.length; t++) {
+          var total = (s.bonus && s.bonus[t]) || 0; // tossup points + team bonus
+          for (var p = 0; p < s.points[t].length; p++) {
+            rows.push([teamName(t), playerName(t, p), s.powers[t][p], s.tens[t][p], s.negs[t][p], s.points[t][p]]);
+            total += s.points[t][p];
+          }
+          rows.push([teamName(t), "(bonus)", "", "", "", (s.bonus && s.bonus[t]) || 0]);
+          rows.push([teamName(t), "(total)", "", "", "", total]);
+        }
+        // Play-by-play: every scoring action in order, with the question text.
+        rows.push([]);
+        rows.push(["Play-by-play"]);
+        rows.push(["Question", "Team", "Player / Part", "Result", "Points", "Question text", "Answer"]);
+        for (var i = 0; i < log.length; i++) {
+          var e = log[i];
+          var who = (e.code >= 4) ? ("Part " + e.who) : playerName(e.team, e.who - 1);
+          var qa = eventText(e);
+          rows.push([qLabel(e.q), teamName(e.team), who, eventResult(e.code), e.pts, qa[0], qa[1]]);
+        }
+        downloadCsv(rows, "match_stats.csv");
+      });
+    }
+
+    function esc(s) {
+      return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    /* ---- Packet parsing (validated against test_packets/ via harness.js) ----
+       Anchored on ANSWER lines and structural markers, never on item numbers.
+       Segments the text into tossups and bonuses, tolerating: interleaved or
+       tossups-then-bonuses layouts; [10]/[10h]/[E] and A./B./C. part markers;
+       bare "Bonus" keywords and unmarked lead-ins; page boilerplate, section
+       headers and inline <tags>; decimals and the occasional missing colon.
+       The Nth tossup is paired with the Nth bonus into an interleaved queue. */
+
+    function Tossup(text, answer) { this.type = "tossup"; this.text = text; this.answer = answer; }
+    function Bonus(leadin, parts) { this.type = "bonus"; this.leadin = leadin; this.parts = parts; }
+
+    // ANSWER: / Answer. / ANS:  (no bare "A:" — it collides with "A." bonus parts).
+    // Colon optional so a typo'd "ANSWER the soul" still registers, but a bonus
+    // lead-in like "Answer the following ... For 10 points each:" is NOT an answer.
+    function isAnswer(ln) {
+      if (/\banswer the following\b|for\s+(ten|10)\s+points/i.test(ln)) return false;
+      return /^\s*(answers?|ans)\b\s*[:.]?(\s|$)/i.test(ln);
+    }
+    function stripAnswer(ln) { return ln.replace(/^\s*(answers?|ans)\b\s*[:.]?\s*/i, "").trim(); }
+    function isMeta(ln) { return /^\s*[<{]/.test(ln) || /^\s*category\s*:/i.test(ln); }
+    function isBlank(ln) { return /^\s*$/.test(ln); }
+    // Strip a trailing inline tag like <ES> or <VP, Mythology> from an answer/clue.
+    function clean(s) { return s.replace(/\s*<[^>]*>\s*$/, "").trim(); }
+
+    // Item-number prefix: "1." "1)" "12:" "TU3." -> { rest }. The number must be
+    // >= 1 and followed by whitespace/end, so a wrapped decimal like "0.01 cm" or
+    // "13.5 m" is not mistaken for an item.
+    function numStart(ln) {
+      var m = ln.match(/^\s*(?:tossup|toss-?up|tu)?\s*([1-9]\d?)\s*[.):](?:\s+(.*))?\s*$/i);
+      return m ? { rest: m[2] || "" } : null;
+    }
+    // Explicit bonus marker: "Bonus" / "Bonus 1)" / "Bonus 1." -> { rest }
+    function bonusStart(ln) {
+      var m = ln.match(/^\s*bonus\b\s*\d*\s*[.):]?\s*(.*)$/i);
+      return m ? { rest: m[1] } : null;
+    }
+    // Bonus part at line start: [10] [10h] [H] (10) (10m)  OR  A. B. C. D.
+    // Letter parts set .letter so the caller can require them to run in sequence
+    // (a lone "C." inside a wrapped clue must not be mistaken for a part).
+    function partStart(ln) {
+      var m = ln.match(/^\s*[\[(]\s*(\d{1,2})?\s*([ehmEHM]?)\s*[\])]\s*(.*)$/);
+      if (m && (m[1] || m[2])) return { value: m[1] ? parseInt(m[1], 10) : null, diff: (m[2] || "").toLowerCase(), rest: m[3], letter: null };
+      var l = ln.match(/^\s*([A-Da-d])\s*[.)]\s+(.*)$/);
+      if (l) return { value: null, diff: "", rest: l[2], letter: l[1].toUpperCase() };
+      return null;
+    }
+
+    function parsePacket(raw) {
+      var lines = raw.split(/\r?\n/);
+
+      // Boilerplate: lines repeated across page breaks, plus page/licensing/section
+      // headers. Repeated long lines catch most PDF page headers/footers.
+      var freq = {};
+      lines.forEach(function (l) { var t = l.trim(); if (t) freq[t] = (freq[t] || 0) + 1; });
+      function isNoise(ln) {
+        var t = ln.trim();
+        if (!t) return false;
+        if (t.length >= 25 && freq[t] >= 2) return true;                                          // repeated header/footer
+        if (/©|\blicensing\b|may not be used|terms for usage|do not use these questions/i.test(t)) return true;
+        if (/\bpage \d+\b/i.test(t) || /^\d{1,3}$/.test(t)) return true;                          // page number (incl. bare)
+        if (/^note to (players?|moderators?|teams?|readers?)\b/i.test(t)) return true;            // moderator note
+        if (/^[_*\s]+$/.test(t) || /^\W*halftime\W*$/i.test(t)) return true;                      // rules / **HALFTIME**
+        if (/^(tossups?|bonuses|round\b.*|packet\b.*|.*\bsection\b|toss-?up questions)$/i.test(t)) return true; // section header
+        return false;
+      }
+
+      // Skip the front matter: start at the first non-noise line that looks like an item.
+      var start = 0;
+      for (var i = 0; i < lines.length; i++) {
+        if (!isNoise(lines[i]) && (numStart(lines[i]) || bonusStart(lines[i]) || partStart(lines[i]))) { start = i; break; }
+      }
+
+      // Build segments. start: "num" | "bonus" | "part" | "text" (unmarked leadin).
+      var segs = [], cur = null, field = null, lastLetter = null; // field: "text" | "answer" | null
+      function open(s, extra, first) {
+        cur = { start: s, value: extra ? extra.value : null, diff: extra ? extra.diff : null, text: [], answer: [] };
+        if (first) cur.text.push(first);
+        segs.push(cur); field = "text";
+      }
+      for (var j = start; j < lines.length; j++) {
+        var ln = lines[j];
+        if (isBlank(ln) || isNoise(ln) || isMeta(ln)) { if (field === "answer") field = null; continue; }
+        if (isAnswer(ln)) { if (cur) { field = "answer"; cur.answer.push(stripAnswer(ln)); } continue; }
+        var ps = partStart(ln);
+        if (ps && ps.letter) {
+          // Letter parts must run A, B, C, ... so a wrapped "C." inside a clue isn't a part.
+          var expect = lastLetter ? String.fromCharCode(lastLetter.charCodeAt(0) + 1) : null;
+          if (ps.letter === "A" || ps.letter === expect) { lastLetter = ps.letter; open("part", ps, ps.rest); continue; }
+          ps = null; // reject; fall through to text
+        } else if (ps) { lastLetter = null; open("part", ps, ps.rest); continue; }
+        var bs = bonusStart(ln);
+        if (bs) { lastLetter = null; open("bonus", null, bs.rest); continue; }
+        var ns = numStart(ln);
+        if (ns) { lastLetter = null; open("num", null, ns.rest); continue; }
+        if (cur && field === "text") cur.text.push(ln.trim());
+        else if (cur && field === "answer") cur.answer.push(ln.trim());
+        else { lastLetter = null; open("text", null, ln.trim()); } // unmarked leadin/clue after an answer ended
+      }
+
+      // Group: a leadin (num/bonus/text seg) followed by part segs is a bonus;
+      // a seg with its own answer and no following parts is a tossup.
+      function mkpart(s) { return { value: s.value, diff: s.diff, text: clean(s.text.join(" ").trim()), answer: clean(s.answer.join(" ").trim()) }; }
+      function leadOf(s) { return clean(s.text.join(" ").trim().replace(/^\s*(?:\d{1,2}\s*[.):]|bonus\b\s*\d*\s*[.):]?)\s*/i, "")); }
+      var items = [];
+      for (var k = 0; k < segs.length;) {
+        var s = segs[k];
+        if (s.start === "part") {
+          var p0 = []; while (k < segs.length && segs[k].start === "part") { p0.push(mkpart(segs[k])); k++; }
+          items.push(new Bonus("", p0));
+        } else if (k + 1 < segs.length && segs[k + 1].start === "part") {
+          var lead = leadOf(s), pp = []; k++;
+          while (k < segs.length && segs[k].start === "part") { pp.push(mkpart(segs[k])); k++; }
+          items.push(new Bonus(lead, pp));
+        } else if (s.start === "bonus") {
+          items.push(new Bonus(leadOf(s), [])); k++;
+        } else {
+          items.push(new Tossup(leadOf(s), clean(s.answer.join(" ").trim()))); k++;
+        }
+      }
+
+      // Pair the Nth tossup with the Nth bonus and interleave into the play queue.
+      var tossups = items.filter(function (q) { return q.type === "tossup"; });
+      var bonuses = items.filter(function (q) { return q.type === "bonus"; });
+      var queue = [];
+      var rounds = Math.max(tossups.length, bonuses.length);
+      for (var r = 0; r < rounds; r++) { if (tossups[r]) queue.push(tossups[r]); if (bonuses[r]) queue.push(bonuses[r]); }
+      return queue;
+    }
+
+    function loadPacket() {
+      var raw = document.getElementById("packet").value;
+      QUESTIONS = parsePacket(raw);
+      try { localStorage.setItem("packet", raw); } catch (e) {}
+      var tu = QUESTIONS.filter(function (q) { return q.type === "tossup"; }).length;
+      document.getElementById("loadinfo").textContent =
+        "Loaded " + QUESTIONS.length + " items (" + tu + " tossups, " + (QUESTIONS.length - tu) + " bonuses).";
+      // Reset to the start and tell the device how many questions exist (so it
+      // clamps the index to the last one).
+      fetch("nav?to=0&count=" + QUESTIONS.length, { method: "POST" });
+      renderQuestion();
+    }
+
+    // Wipe the packet from the page (textarea, parsed questions, saved copy).
+    function clearLoadedPacket() {
+      QUESTIONS = [];
+      document.getElementById("packet").value = "";
+      document.getElementById("loadinfo").textContent = "";
+      try { localStorage.removeItem("packet"); } catch (e) {}
+      renderQuestion();
+    }
+
+    // Clear packet button: also tell the device there are no questions.
+    function clearPacket() {
+      clearLoadedPacket();
+      fetch("nav?to=0&count=0", { method: "POST" });
+    }
+
+    function renderQuestion() {
+      var el = document.getElementById("question");
+      if (!QUESTIONS.length) { el.innerHTML = "<em>No packet loaded.</em>"; return; }
+      if (curQ < 0 || curQ >= QUESTIONS.length) {
+        el.innerHTML = "<div class=\"qhead\">Item " + (curQ + 1) + " / " + QUESTIONS.length + "</div><em>End of packet.</em>";
+        return;
+      }
+      var q = QUESTIONS[curQ];
+      var html = "<div class=\"qhead\">" + q.type
+               + " &middot; item " + (curQ + 1) + " / " + QUESTIONS.length + "</div>";
+      if (q.type === "tossup") {
+        html += "<div>" + esc(q.text) + "</div>";
+        html += "<div class=\"ans\">ANSWER: " + esc(q.answer) + "</div>";
+      } else {
+        html += "<div>" + esc(q.leadin) + "</div>";
+        for (var i = 0; i < q.parts.length; i++) {
+          var p = q.parts[i];
+          var label = "[" + (p.value != null ? p.value : "") + p.diff + "]";
+          html += "<div class=\"bpart\" id=\"bp" + i + "\"><b>" + label + "</b> "
+                + "<span class=\"mark\" id=\"bm" + i + "\"></span>" + esc(p.text)
+                + "<div class=\"ans\">ANSWER: " + esc(p.answer) + "</div></div>";
+        }
+      }
+      el.innerHTML = html;
+    }
+
+    // Build a panel per team: an editable team-name field, the total, then an
+    // editable name + score per player.
+    var teams = document.getElementById("teams");
+    for (var t = 0; t < TEAMS; t++) {
+      var panel = document.createElement("div");
+      panel.className = "team";
+      panel.id = "team" + t;
+      var ph = "<input class=\"tname\" id=\"tn" + t + "\" onchange=\"renameTeam(" + t + ", this.value)\">"
+             + "<div class=\"total\" id=\"t" + t + "\">0</div>";
+      for (var p = 1; p <= PLAYERS; p++) {
+        ph += "<div class=\"player\" id=\"p" + t + "_" + p + "\">"
+            + "<input class=\"pname\" id=\"pn" + t + "_" + p + "\" onchange=\"renamePlayer(" + t + "," + (p - 1) + ", this.value)\">"
+            + "<span id=\"ps" + t + "_" + p + "\">0</span></div>";
+      }
+      panel.innerHTML = ph;
+      teams.appendChild(panel);
+    }
+    // Fill the name fields from saved/default names.
+    for (var t = 0; t < TEAMS; t++) {
+      document.getElementById("tn" + t).value = teamName(t);
+      for (var p = 1; p <= PLAYERS; p++) document.getElementById("pn" + t + "_" + p).value = playerName(t, p - 1);
+    }
+
+    var es = new EventSource("events");
+    es.onmessage = function (ev) {
+      var d = JSON.parse(ev.data);
+
+      // The device picks a new session id each boot. If it changed since we
+      // last saw it, the system was power-cycled, so discard the cached packet.
+      if (typeof d.sid !== "undefined") {
+        try {
+          var seen = localStorage.getItem("sid");
+          if (seen !== null && seen !== String(d.sid)) clearLoadedPacket();
+          localStorage.setItem("sid", String(d.sid));
+        } catch (e) {}
+      }
+
+      // Match-over end screen (full-screen overlay with the final report).
+      var mo = document.getElementById("matchover");
+      if (d.over) { renderReport(d); mo.style.display = "block"; }
+      else { mo.style.display = "none"; }
+
+      // Current item type (from the device's index + our parsed packet).
+      var cur = (typeof d.q === "number") ? QUESTIONS[d.q] : null;
+      var onBonus = cur && cur.type === "bonus";
+      var reserved = (typeof d.lock === "number") ? d.lock : -1;
+      var partsLen = onBonus ? cur.parts.length : 0;
+      var part = (typeof d.part === "number") ? d.part : 0;
+      var bonusDone = onBonus && part >= partsLen; // all parts decided
+
+      // Status: on a reserved bonus, name the team and the part we're on.
+      document.getElementById("status").textContent =
+        (onBonus && reserved >= 0) ? ("Bonus, reserved for " + teamName(reserved)
+            + (bonusDone ? " · complete" : " · part " + (part + 1) + " / " + partsLen))
+        : (d.active && d.wteam >= 0) ? (playerName(d.wteam, d.wplayer - 1) + ", " + teamName(d.wteam))
+        : "No buzz yet";
+
+      // Tossup: power/+10/neg on a live buzz. Bonus: +10 and Miss for the
+      // reserved team until every part has been decided.
+      var tossupBuzz = d.active && !onBonus;
+      var bonusActive = onBonus && reserved >= 0 && part < partsLen;
+      document.getElementById("bPower").disabled = !tossupBuzz;
+      document.getElementById("bNeg").disabled = !tossupBuzz;
+      document.getElementById("bStd").disabled = !(tossupBuzz || bonusActive);
+      document.getElementById("bMiss").disabled = !bonusActive;
+
+      for (var t = 0; t < d.teams.length; t++) {
+        document.getElementById("t" + t).textContent = d.teams[t];
+        for (var p = 0; p < d.players[t].length; p++) {
+          var pid = p + 1;
+          var ps = document.getElementById("ps" + t + "_" + pid);
+          if (ps) ps.textContent = d.players[t][p];
+          var row = document.getElementById("p" + t + "_" + pid);
+          if (row) row.classList.toggle("buzzed", d.active && d.wteam === t && d.wplayer === pid);
+        }
+        var panel = document.getElementById("team" + t);
+        if (panel) {
+          // Struck through if it negged this question; outlined if it owns the bonus.
+          if (d.negged) panel.classList.toggle("negged", !!d.negged[t]);
+          panel.classList.toggle("reserved", onBonus && reserved === t);
+        }
+      }
+
+      // Device owns the question index; show whatever it points at.
+      if (typeof d.q === "number" && d.q !== curQ) { curQ = d.q; renderQuestion(); }
+
+      // Highlight the bonus part being read and mark decided parts ✓ / ✗.
+      if (onBonus) {
+        for (var i = 0; i < partsLen; i++) {
+          var bp = document.getElementById("bp" + i);
+          if (bp) { bp.classList.toggle("current", i === part); bp.classList.toggle("done", i < part); }
+          var bm = document.getElementById("bm" + i);
+          if (bm) {
+            var r = d.bres && d.bres[i];
+            bm.textContent = r === 1 ? "✓ " : r === 2 ? "✗ " : "";
+            bm.className = "mark" + (r === 1 ? " got" : r === 2 ? " miss" : "");
+          }
+        }
+      }
+
+      // Once every bonus part is decided, briefly show the result, then clear
+      // and cycle to the next tossup. Cancelable so a manual Clear/Next during
+      // the pause doesn't double-advance.
+      if (onBonus && partsLen > 0 && part >= partsLen) {
+        if (autoClearTimer === null) autoClearTimer = setTimeout(function () { autoClearTimer = null; clr(); }, 1200);
+      } else if (autoClearTimer !== null) {
+        clearTimeout(autoClearTimer);
+        autoClearTimer = null;
+      }
+    };
+
+    // Restore a previously pasted packet so a page refresh keeps it. The device
+    // retains its question count across refreshes; if it has actually rebooted,
+    // the session-id check above clears this packet on the first event.
+    try {
+      var saved = localStorage.getItem("packet");
+      if (saved) {
+        document.getElementById("packet").value = saved;
+        QUESTIONS = parsePacket(saved);
+        renderQuestion();
+      }
+    } catch (e) {}
+  </script>
+</body>
+</html>
