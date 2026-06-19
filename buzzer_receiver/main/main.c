@@ -31,6 +31,11 @@ int64_t time_1 = 0;
 int64_t time_2 = 0;
 int64_t time_diff = 0;
 
+typedef struct timing_packet{
+  int64_t in_time_1;
+  int64_t in_time_2;
+} timing_packet;
+
 
 void app_main(void) 
 {
@@ -56,9 +61,10 @@ void app_main(void)
       if(time_1 == 0)
       {
         time_1 = esp_timer_get_time();
-        printf("Team %d, player %d, time %" PRId64 "\n", team, player, time_1);
+        // printf("Team %d, player %d, time %" PRId64 "\n", team, player, time_1);
 
-      } else if(time_1 != 0)
+      } 
+      else if(time_1 != 0)
       {
         time_2 = esp_timer_get_time();
         time_diff = time_2 - time_1;
