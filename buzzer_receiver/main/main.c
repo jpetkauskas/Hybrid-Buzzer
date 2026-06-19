@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "esp_timer.h"
 
 #include "button.h"
 #include "buzz.h"
@@ -25,6 +26,11 @@
 #include "wireless.h"
 
 packet incoming; //incoming espnow data buffer
+
+int64_t time_1 = 0;
+int64_t time_2 = 0;
+int64_t time_diff = 0;
+
 
 void app_main(void) 
 {
@@ -40,20 +46,36 @@ void app_main(void)
 
   while (1) 
   {
-    if (xQueueReceive(q, &incoming, portMAX_DELAY) && !latch_state) 
+    if (xQueueReceive(q, &incoming, portMAX_DELAY) /*&& !latch_state*/) 
     {
       latch_state = true;
-
+            
       int8_t team = incoming.transmitter_id;
       int8_t player = incoming.player_id;
+
+      if(time_1 == 0)
+      {
+        time_1 = esp_timer_get_time();
+        printf("Team %d, player %d, time %" PRId64 "\n", team, player, time_1);
+
+      } else if(time_1 != 0)
+      {
+        time_2 = esp_timer_get_time();
+        time_diff = time_2 - time_1;
+        printf("Team %d, player %d, time %" PRId64 "\n", team, player, time_2);
+        printf("TIME DIFFERENCE: %" PRId64 ", TEAM WINNER:%d \n\n", time_diff, team);
+
+        time_1 = 0;
+        time_2 = 0;
+      }
+
 
       uint32_t player_led_index = (team * 4) + player;
       gpio_set_level(led_array[player_led_index - 1], 1);
 
-      buzz_profile *bp = &bn[team];
-      xQueueSend(buzz_queue, &bp, 0);
+      // buzz_profile *bp = &bn[team];
+      // xQueueSend(buzz_queue, &bp, 0);
 
-      // printf("Team %d, player %d\n", team, player);
       webserver_set_winner(team, player); //mirror the buzz winner to the web page
     }
   }
