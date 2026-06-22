@@ -17,6 +17,4 @@ extern QueueHandle_t q;
 
 extern packet data;
 
-extern uint8_t team;
-
 void init_transmitter_gpio(QueueHandle_t queue);

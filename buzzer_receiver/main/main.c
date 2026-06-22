@@ -69,7 +69,7 @@ void app_main(void)
         time_2 = esp_timer_get_time();
         time_diff = time_2 - time_1;
         printf("Team %d, player %d, time %" PRId64 "\n", team, player, time_2);
-        printf("TIME DIFFERENCE: %" PRId64 ", TEAM WINNER:%d \n\n", time_diff / 1000, team);
+        printf("TIME DIFFERENCE: %" PRId64 ", TEAM WINNER:%d \n\n", time_diff, team);
 
         time_1 = 0;
         time_2 = 0;
@@ -82,7 +82,7 @@ void app_main(void)
       // buzz_profile *bp = &bn[team];
       // xQueueSend(buzz_queue, &bp, 0);
 
-      webserver_set_winner(team, player); //mirror the buzz winner to the web page
+      // webserver_set_winner(team, player); //mirror the buzz winner to the web page
     }
   }
 }

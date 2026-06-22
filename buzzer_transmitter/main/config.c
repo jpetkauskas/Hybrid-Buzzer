@@ -3,7 +3,6 @@
 packet data;
 QueueHandle_t q;
 
-uint8_t team = 0;
 
 static button_ctx_t btn_ctx[4] = {
     {SW_1, 1, 0, NULL},
@@ -30,7 +29,7 @@ void init_transmitter_gpio(QueueHandle_t queue) {
 
   for (int i = 0; i < 4; i++) {
     btn_ctx[i].q = queue;
-    btn_ctx[i].transmitter_id = team;
+    // btn_ctx[i].transmitter_id = team;
   }
 
   gpio_install_isr_service(0);

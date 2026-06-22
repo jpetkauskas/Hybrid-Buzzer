@@ -25,7 +25,7 @@ void app_main(void) {
     if (xQueueReceive(q, &data, portMAX_DELAY)) 
     {
       esp_now_send(receiver_mac, (uint8_t *)&data, sizeof(data));
-      printf("Pin %d fired\n", data.player_id);
+      // printf("Pin %d fired\n", data.player_id);
       led_trigger();
     }
   }
