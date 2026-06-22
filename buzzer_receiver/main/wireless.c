@@ -6,6 +6,7 @@
 #include "esp_now.h"
 #include "freertos/idf_additions.h"
 #include "freertos/projdefs.h"
+#include "freertos/task.h"
 #include "packet.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -13,26 +14,76 @@
 
 uint8_t transmitter_mac_addresses[2][6];
 
+static TaskHandle_t sync_task_handle = NULL;
+static volatile uint8_t current_epoch = 0;
+
 esp_now_peer_info_t peer = {.channel = 0, .encrypt = false,};
 
-void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) 
+void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
+  if (len < (int)sizeof(packet)) return;
+
   packet received;
   memcpy(&received, data, sizeof(packet));
+
+  /* Drop sync packets and stale packets from a previous epoch. */
+  if (received.transmitter_id == PACKET_SYNC_ID) return;
+  if (received.epoch != current_epoch) return;
 
   uint8_t incoming_mac[6];
   memcpy(incoming_mac, info->src_addr, 6);
 
-  if(memcmp(&incoming_mac, transmitter_mac_addresses[0], 6) == 0)
+  if (memcmp(incoming_mac, transmitter_mac_addresses[0], 6) == 0)
   {
     received.transmitter_id = 0;
-  } 
-  else if(memcmp(&incoming_mac, transmitter_mac_addresses[1], 6) == 0)
+  }
+  else if (memcmp(incoming_mac, transmitter_mac_addresses[1], 6) == 0)
   {
     received.transmitter_id = 1;
   }
+  else
+  {
+    return; /* unknown source */
+  }
 
   xQueueSendFromISR(q, &received, NULL);
+}
+
+/* ── Sync task ──────────────────────────────────────────────────────────── */
+
+static void sync_sender_task(void *arg)
+{
+  while (1)
+  {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    current_epoch++;
+    packet sync_pkt = {
+        .transmitter_id = PACKET_SYNC_ID,
+        .player_id      = PACKET_SYNC_ID,
+        .transmitter_mac = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+        .timestamp_us   = 0xFFFFFFFF,
+        .epoch          = current_epoch,
+    };
+    esp_now_send(DEFAULT_MAC_VALUE, (uint8_t *)&sync_pkt, sizeof(sync_pkt));
+  }
+}
+
+void init_sync_task(void)
+{
+  xTaskCreate(sync_sender_task, "sync", 2048, NULL, 10, &sync_task_handle);
+}
+
+void request_sync(void)
+{
+  if (sync_task_handle) xTaskNotifyGive(sync_task_handle);
+}
+
+void IRAM_ATTR request_sync_from_isr(void)
+{
+  if (!sync_task_handle) return;
+  BaseType_t woken = pdFALSE;
+  vTaskNotifyGiveFromISR(sync_task_handle, &woken);
+  portYIELD_FROM_ISR(woken);
 }
 
 void pairing_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data, int len) 
@@ -124,4 +175,6 @@ void receiver_init_wireless(void)
 
   esp_now_unregister_recv_cb();
   esp_now_register_recv_cb(on_recv);
+
+  request_sync(); /* establish epoch 1 before the first question */
 }

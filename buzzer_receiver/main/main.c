@@ -24,37 +24,60 @@
 #include "webserver.h"
 #include "wireless.h"
 
-packet incoming; //incoming espnow data buffer
-
-void app_main(void) 
+void app_main(void)
 {
   q = xQueueCreate(10, sizeof(packet)); //FreeRTOS packet
 
   receiver_init_gpio(); //GPIO helper
-  
+
   init_buzz(); //initializes buzzer FreeRTOS overhead
 
   send_buzz(&bn[0]); //buzz once on powerup
 
-  receiver_init_wireless(); //espnow overhead + autopair, returns once ready 
+  init_sync_task(); //must come before receiver_init_wireless
 
-  while (1) 
+  receiver_init_wireless(); //espnow overhead + autopair, returns once ready
+
+  while (1)
   {
-    if (xQueueReceive(q, &incoming, portMAX_DELAY) && !latch_state) 
+    packet first;
+    if (xQueueReceive(q, &first, portMAX_DELAY) != pdTRUE) continue;
+
+    if (latch_state) continue; /* discard packets that arrived while latched */
+
+    /* Collect a competing packet within the arbitration window. */
+    packet winner = first;
+    packet competitor;
+    bool contested = false;
+    if (xQueueReceive(q, &competitor, pdMS_TO_TICKS(20)) == pdTRUE)
     {
-      latch_state = true;
-
-      int8_t team = incoming.transmitter_id;
-      int8_t player = incoming.player_id;
-
-      uint32_t player_led_index = (team * 4) + player;
-      gpio_set_level(led_array[player_led_index - 1], 1);
-
-      buzz_profile *bp = &bn[team];
-      xQueueSend(buzz_queue, &bp, 0);
-
-      // printf("Team %d, player %d\n", team, player);
-      webserver_set_winner(team, player); //mirror the buzz winner to the web page
+      contested = true;
+      if (competitor.timestamp_us < winner.timestamp_us)
+        winner = competitor;
     }
+
+    latch_state = true;
+
+    int8_t team   = winner.transmitter_id;
+    int8_t player = winner.player_id;
+
+    if (contested)
+    {
+      uint32_t delta_us = (winner.timestamp_us < competitor.timestamp_us)
+                          ? competitor.timestamp_us - winner.timestamp_us
+                          : winner.timestamp_us - competitor.timestamp_us;
+      bool radio_first_won = (first.transmitter_id == winner.transmitter_id &&
+                              first.player_id      == winner.player_id);
+      printf("Contested: T%d P%d won by %" PRIu32 " µs  (arrived %s)\n",
+             team + 1, player, delta_us,
+             radio_first_won ? "first" : "second");
+    }
+
+    gpio_set_level(led_array[(team * 4) + player - 1], 1);
+
+    buzz_profile *bp = &bn[team];
+    xQueueSend(buzz_queue, &bp, 0);
+
+    webserver_set_winner(team, player);
   }
 }

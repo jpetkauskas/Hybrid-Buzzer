@@ -1,16 +1,20 @@
 #include "wireless.h"
 #include "esp_now.h"
+#include "esp_timer.h"
 #include "led.h"
+#include "packet.h"
 #include <stdint.h>
 #include <string.h>
 
-uint8_t receiver_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // save from previous default?
+uint8_t receiver_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 esp_now_peer_info_t peer = {.channel = 0, .encrypt = false,};
 
-void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) 
+volatile int64_t sync_base_us = 0;
+volatile uint8_t local_epoch  = 0;
+
+void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
-  
   packet *handshake;
   memcpy(&handshake, &data, sizeof(data));
 
@@ -21,6 +25,20 @@ void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
     led_trigger();
     esp_now_unregister_recv_cb();
     xSemaphoreGive(received_sem);
+  }
+}
+
+static void sync_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data, int len)
+{
+  if (len < (int)sizeof(packet)) return;
+  if (memcmp(info->src_addr, receiver_mac, 6) != 0) return;
+
+  packet pkt;
+  memcpy(&pkt, data, sizeof(pkt));
+  if (pkt.transmitter_id == PACKET_SYNC_ID && pkt.player_id == PACKET_SYNC_ID)
+  {
+    sync_base_us = esp_timer_get_time();
+    local_epoch  = pkt.epoch;
   }
 }
 
@@ -48,4 +66,6 @@ void init_transmitter_wireless(void)
   // Defining receiver MAC
   memcpy(peer.peer_addr, receiver_mac, 6);
   esp_now_add_peer(&peer);
+
+  esp_now_register_recv_cb(sync_recv_callback);
 }

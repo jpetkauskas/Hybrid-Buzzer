@@ -18,6 +18,10 @@ extern esp_now_peer_info_t peer;
 
 static SemaphoreHandle_t received_sem;
 
+/* Updated by sync_recv_callback; read from IRAM button ISR — must be in RAM. */
+extern volatile int64_t sync_base_us;
+extern volatile uint8_t local_epoch;
+
 void init_transmitter_wireless(void);
 
 static void wireless_hardware_init(void);

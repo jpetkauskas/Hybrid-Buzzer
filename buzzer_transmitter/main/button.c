@@ -2,6 +2,7 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "packet.h"
+#include "wireless.h"
 
 int64_t last_fire[GPIO_NUM_MAX];
 
@@ -24,7 +25,9 @@ void IRAM_ATTR button_isr(void *arg) {
 
   packet to_send;
 
-  to_send.player_id = pin_id;
+  to_send.player_id      = pin_id;
   to_send.transmitter_id = ctx->transmitter_id;
+  to_send.timestamp_us   = (uint32_t)(esp_timer_get_time() - sync_base_us);
+  to_send.epoch          = local_epoch;
   xQueueSendFromISR(ctx->q, &to_send, NULL);
 }
