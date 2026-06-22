@@ -21,5 +21,7 @@ void IRAM_ATTR button_isr(void *arg) {
 
   clear_buzz();
 
+  request_sync_from_isr(); /* re-arm transmitters with a new epoch */
+
   webserver_notify_clear_from_isr(); //push the cleared state to web clients
 }

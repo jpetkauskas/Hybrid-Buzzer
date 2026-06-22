@@ -25,7 +25,9 @@
 
 static const uint8_t DEFAULT_MAC_VALUE[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
-static packet handshake = {3,3, {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}};
+static packet handshake = {.transmitter_id = 3, .player_id = 3,
+                           .transmitter_mac = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF},
+                           .timestamp_us = 0, .epoch = 0};
 
 void pairing_recv_callback(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 
@@ -34,6 +36,11 @@ void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 void receiver_init_wireless(void);
 
 void receiver_hardware_init(void);
+
+/* Sync task lifecycle and notification (safe from task and ISR context). */
+void init_sync_task(void);
+void request_sync(void);
+void IRAM_ATTR request_sync_from_isr(void);
 
 static SemaphoreHandle_t pairing_complete;
 

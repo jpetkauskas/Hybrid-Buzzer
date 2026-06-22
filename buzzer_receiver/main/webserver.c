@@ -25,6 +25,9 @@ extern bool latch_state;
 /* Defined in button.c: the same reset the physical CLEAR button performs. */
 void IRAM_ATTR clear_buzz(void);
 
+/* Defined in wireless.c: sends a sync pulse to both transmitters. */
+void request_sync(void);
+
 #define AP_SSID         "BuzzerReceiver"
 #define AP_MAX_CONN     4
 #define MAX_CLIENTS     4    /* concurrent live (SSE) viewers */
@@ -396,6 +399,7 @@ static esp_err_t events_get_handler(httpd_req_t *req)
 static esp_err_t clear_post_handler(httpd_req_t *req)
 {
   clear_buzz();
+  request_sync();
   locked_team = -1; /* end any tossup/bonus reservation */
   reset_bonus();
   question_index++; /* each clear/arm cycle advances to the next question */
@@ -464,6 +468,7 @@ static esp_err_t score_post_handler(httpd_req_t *req)
   else
   {
     clear_buzz(); /* neg / no award: re-arm so another team can ring in */
+    request_sync();
   }
 
   broadcast_work(NULL);
@@ -556,6 +561,7 @@ static esp_err_t nav_post_handler(httpd_req_t *req)
   if (navigated)
   {
     clear_buzz();
+    request_sync();
     locked_team = -1;
     reset_bonus();
     match_over = false; /* moving within the packet exits the end screen */
