@@ -53,25 +53,15 @@ void app_main(void)
     {
       contested = true;
       if (competitor.timestamp_us < winner.timestamp_us)
+      {
         winner = competitor;
+      }
     }
 
     latch_state = true;
 
     int8_t team   = winner.transmitter_id;
     int8_t player = winner.player_id;
-
-    if (contested)
-    {
-      uint32_t delta_us = (winner.timestamp_us < competitor.timestamp_us)
-                          ? competitor.timestamp_us - winner.timestamp_us
-                          : winner.timestamp_us - competitor.timestamp_us;
-      bool radio_first_won = (first.transmitter_id == winner.transmitter_id &&
-                              first.player_id      == winner.player_id);
-      printf("Contested: T%d P%d won by %" PRIu32 " µs  (arrived %s)\n",
-             team + 1, player, delta_us,
-             radio_first_won ? "first" : "second");
-    }
 
     gpio_set_level(led_array[(team * 4) + player - 1], 1);
 
